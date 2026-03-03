@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/sandbox-build-helpers.sh"
+
 BASE_IMAGE="${BASE_IMAGE:-openclaw-sandbox:bookworm-slim}"
 TARGET_IMAGE="${TARGET_IMAGE:-openclaw-sandbox-common:bookworm-slim}"
 PACKAGES="${PACKAGES:-curl wget jq coreutils grep nodejs npm python3 git ca-certificates golang-go rustc cargo unzip pkg-config libasound2-dev build-essential file}"
@@ -19,7 +21,7 @@ fi
 
 echo "Building ${TARGET_IMAGE} with: ${PACKAGES}"
 
-docker build \
+docker_args=(build \
   -t "${TARGET_IMAGE}" \
   -f Dockerfile.sandbox-common \
   --build-arg BASE_IMAGE="${BASE_IMAGE}" \
@@ -29,8 +31,12 @@ docker build \
   --build-arg BUN_INSTALL_DIR="${BUN_INSTALL_DIR}" \
   --build-arg INSTALL_BREW="${INSTALL_BREW}" \
   --build-arg BREW_INSTALL_DIR="${BREW_INSTALL_DIR}" \
-  --build-arg FINAL_USER="${FINAL_USER}" \
-  .
+  --build-arg FINAL_USER="${FINAL_USER}")
+
+append_sandbox_docker_build_args docker_args
+docker_args+=(.)
+
+docker "${docker_args[@]}"
 
 cat <<NOTE
 Built ${TARGET_IMAGE}.
