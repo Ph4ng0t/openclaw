@@ -195,7 +195,12 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     streamingStartPromise = (async () => {
       const creds =
         account.appId && account.appSecret
-          ? { appId: account.appId, appSecret: account.appSecret, domain: account.domain }
+          ? {
+              appId: account.appId,
+              appSecret: account.appSecret,
+              domain: account.domain,
+              proxy: account.proxy,
+            }
           : null;
       if (!creds) {
         return;

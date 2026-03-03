@@ -143,6 +143,7 @@ export const FeishuGroupSchema = z
   .strict();
 
 const FeishuSharedConfigShape = {
+  proxy: z.string().url().optional(),
   webhookHost: z.string().optional(),
   webhookPort: z.number().int().positive().optional(),
   capabilities: z.array(z.string()).optional(),

@@ -1,4 +1,4 @@
-import os from "node:os";
+import { getNetworkInterfacesSafe } from "../gateway/net.js";
 import { isIpInCidr } from "../shared/net/ip.js";
 
 export type TailnetAddresses = {
@@ -25,7 +25,7 @@ export function listTailnetAddresses(): TailnetAddresses {
   const ipv4: string[] = [];
   const ipv6: string[] = [];
 
-  const ifaces = os.networkInterfaces();
+  const ifaces = getNetworkInterfacesSafe();
   for (const entries of Object.values(ifaces)) {
     if (!entries) {
       continue;

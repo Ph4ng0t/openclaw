@@ -4,9 +4,10 @@
 
 import type { Client } from "@larksuiteoapi/node-sdk";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk";
+import { createFeishuHttpInstance, resolveFeishuProxyUrl } from "./client.js";
 import type { FeishuDomain } from "./types.js";
 
-type Credentials = { appId: string; appSecret: string; domain?: FeishuDomain };
+type Credentials = { appId: string; appSecret: string; domain?: FeishuDomain; proxy?: string };
 type CardState = { cardId: string; messageId: string; sequence: number; currentText: string };
 
 /** Optional header for streaming cards (title bar with color template) */
@@ -43,6 +44,49 @@ function resolveAllowedHostnames(domain?: FeishuDomain): string[] {
   return ["open.feishu.cn"];
 }
 
+function assertAllowedFeishuUrl(url: string, allowedHostnames: string[]): void {
+  const hostname = new URL(url).hostname;
+  if (!allowedHostnames.includes(hostname)) {
+    throw new Error(`Blocked Feishu API hostname: ${hostname}`);
+  }
+}
+
+async function requestFeishuApi<T>(params: {
+  url: string;
+  method: "POST" | "PUT" | "PATCH";
+  headers?: Record<string, string>;
+  data?: unknown;
+  allowedHostnames: string[];
+  auditContext: string;
+  proxy?: string;
+}): Promise<T> {
+  assertAllowedFeishuUrl(params.url, params.allowedHostnames);
+  const proxyUrl = resolveFeishuProxyUrl(params.proxy);
+  const httpInstance = createFeishuHttpInstance(proxyUrl);
+  if (httpInstance) {
+    return (await httpInstance.request({
+      url: params.url,
+      method: params.method,
+      headers: params.headers,
+      data: params.data,
+    })) as T;
+  }
+
+  const { response, release } = await fetchWithSsrFGuard({
+    url: params.url,
+    init: {
+      method: params.method,
+      headers: params.headers,
+      body: params.data === undefined ? undefined : JSON.stringify(params.data),
+    },
+    policy: { allowedHostnames: params.allowedHostnames },
+    auditContext: params.auditContext,
+  });
+  const data = (await response.json()) as T;
+  await release();
+  return data;
+}
+
 async function getToken(creds: Credentials): Promise<string> {
   const key = `${creds.domain ?? "feishu"}|${creds.appId}`;
   const cached = tokenCache.get(key);
@@ -50,23 +94,21 @@ async function getToken(creds: Credentials): Promise<string> {
     return cached.token;
   }
 
-  const { response, release } = await fetchWithSsrFGuard({
-    url: `${resolveApiBase(creds.domain)}/auth/v3/tenant_access_token/internal`,
-    init: {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: creds.appId, app_secret: creds.appSecret }),
-    },
-    policy: { allowedHostnames: resolveAllowedHostnames(creds.domain) },
-    auditContext: "feishu.streaming-card.token",
-  });
-  const data = (await response.json()) as {
+  const allowedHostnames = resolveAllowedHostnames(creds.domain);
+  const data = await requestFeishuApi<{
     code: number;
     msg: string;
     tenant_access_token?: string;
     expire?: number;
-  };
-  await release();
+  }>({
+    url: `${resolveApiBase(creds.domain)}/auth/v3/tenant_access_token/internal`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    data: { app_id: creds.appId, app_secret: creds.appSecret },
+    allowedHostnames,
+    auditContext: "feishu.streaming-card.token",
+    proxy: creds.proxy,
+  });
   if (data.code !== 0 || !data.tenant_access_token) {
     throw new Error(`Token error: ${data.msg}`);
   }
@@ -156,25 +198,22 @@ export class FeishuStreamingSession {
     }
 
     // Create card entity
-    const { response: createRes, release: releaseCreate } = await fetchWithSsrFGuard({
-      url: `${apiBase}/cardkit/v1/cards`,
-      init: {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${await getToken(this.creds)}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ type: "card_json", data: JSON.stringify(cardJson) }),
-      },
-      policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
-      auditContext: "feishu.streaming-card.create",
-    });
-    const createData = (await createRes.json()) as {
+    const createData = await requestFeishuApi<{
       code: number;
       msg: string;
       data?: { card_id: string };
-    };
-    await releaseCreate();
+    }>({
+      url: `${apiBase}/cardkit/v1/cards`,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${await getToken(this.creds)}`,
+        "Content-Type": "application/json",
+      },
+      data: { type: "card_json", data: JSON.stringify(cardJson) },
+      allowedHostnames: resolveAllowedHostnames(this.creds.domain),
+      auditContext: "feishu.streaming-card.create",
+      proxy: this.creds.proxy,
+    });
     if (createData.code !== 0 || !createData.data?.card_id) {
       throw new Error(`Create card failed: ${createData.msg}`);
     }
@@ -227,27 +266,22 @@ export class FeishuStreamingSession {
     }
     const apiBase = resolveApiBase(this.creds.domain);
     this.state.sequence += 1;
-    await fetchWithSsrFGuard({
+    await requestFeishuApi({
       url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/content/content`,
-      init: {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${await getToken(this.creds)}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          content: text,
-          sequence: this.state.sequence,
-          uuid: `s_${this.state.cardId}_${this.state.sequence}`,
-        }),
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${await getToken(this.creds)}`,
+        "Content-Type": "application/json",
       },
-      policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
+      data: {
+        content: text,
+        sequence: this.state.sequence,
+        uuid: `s_${this.state.cardId}_${this.state.sequence}`,
+      },
+      allowedHostnames: resolveAllowedHostnames(this.creds.domain),
       auditContext: "feishu.streaming-card.update",
-    })
-      .then(async ({ release }) => {
-        await release();
-      })
-      .catch((error) => onError?.(error));
+      proxy: this.creds.proxy,
+    }).catch((error) => onError?.(error));
   }
 
   async update(text: string): Promise<void> {
@@ -301,29 +335,24 @@ export class FeishuStreamingSession {
 
     // Close streaming mode
     this.state.sequence += 1;
-    await fetchWithSsrFGuard({
+    await requestFeishuApi({
       url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/settings`,
-      init: {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${await getToken(this.creds)}`,
-          "Content-Type": "application/json; charset=utf-8",
-        },
-        body: JSON.stringify({
-          settings: JSON.stringify({
-            config: { streaming_mode: false, summary: { content: truncateSummary(text) } },
-          }),
-          sequence: this.state.sequence,
-          uuid: `c_${this.state.cardId}_${this.state.sequence}`,
-        }),
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${await getToken(this.creds)}`,
+        "Content-Type": "application/json; charset=utf-8",
       },
-      policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
+      data: {
+        settings: JSON.stringify({
+          config: { streaming_mode: false, summary: { content: truncateSummary(text) } },
+        }),
+        sequence: this.state.sequence,
+        uuid: `c_${this.state.cardId}_${this.state.sequence}`,
+      },
+      allowedHostnames: resolveAllowedHostnames(this.creds.domain),
       auditContext: "feishu.streaming-card.close",
-    })
-      .then(async ({ release }) => {
-        await release();
-      })
-      .catch((e) => this.log?.(`Close failed: ${String(e)}`));
+      proxy: this.creds.proxy,
+    }).catch((e) => this.log?.(`Close failed: ${String(e)}`));
 
     this.log?.(`Closed streaming: cardId=${this.state.cardId}`);
   }

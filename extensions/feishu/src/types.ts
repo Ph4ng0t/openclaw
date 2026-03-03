@@ -31,6 +31,7 @@ export type ResolvedFeishuAccount = {
   encryptKey?: string;
   verificationToken?: string;
   domain: FeishuDomain;
+  proxy?: string;
   /** Merged config (top-level defaults + account-specific overrides) */
   config: FeishuConfig;
 };

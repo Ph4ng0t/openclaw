@@ -108,6 +108,7 @@ export function resolveFeishuCredentials(cfg?: FeishuConfig): {
   encryptKey?: string;
   verificationToken?: string;
   domain: FeishuDomain;
+  proxy?: string;
 } | null;
 export function resolveFeishuCredentials(
   cfg: FeishuConfig | undefined,
@@ -118,6 +119,7 @@ export function resolveFeishuCredentials(
   encryptKey?: string;
   verificationToken?: string;
   domain: FeishuDomain;
+  proxy?: string;
 } | null;
 export function resolveFeishuCredentials(
   cfg?: FeishuConfig,
@@ -128,6 +130,7 @@ export function resolveFeishuCredentials(
   encryptKey?: string;
   verificationToken?: string;
   domain: FeishuDomain;
+  proxy?: string;
 } | null {
   const appId = cfg?.appId?.trim();
   const appSecret = options?.allowUnresolvedSecretRef
@@ -151,6 +154,7 @@ export function resolveFeishuCredentials(
             path: "channels.feishu.verificationToken",
           })) || undefined,
     domain: cfg?.domain ?? "feishu",
+    proxy: cfg?.proxy?.trim() || undefined,
   };
 }
 
@@ -198,6 +202,7 @@ export function resolveFeishuAccount(params: {
     encryptKey: creds?.encryptKey,
     verificationToken: creds?.verificationToken,
     domain: creds?.domain ?? "feishu",
+    proxy: creds?.proxy,
     config: merged,
   };
 }
