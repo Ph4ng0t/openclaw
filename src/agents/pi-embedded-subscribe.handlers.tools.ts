@@ -19,7 +19,11 @@ import {
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { consumeAdjustedParamsForToolCall } from "./pi-tools.before-tool-call.js";
-import { requestMinimumFsPrivilege, type FsAccessDeniedPayload } from "./privilege-broker.js";
+import {
+  requestHostExecPrivilege,
+  requestMinimumFsPrivilege,
+  type FsAccessDeniedPayload,
+} from "./privilege-broker.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
@@ -163,6 +167,56 @@ function readFsPrivilegeRequestDetails(result: unknown):
     return undefined;
   }
   return { path: deniedPath, requestedAccess };
+}
+
+function readHostExecPrivilegeRequestDetails(params: {
+  toolName: string;
+  result: unknown;
+  startArgs: unknown;
+}):
+  | {
+      command: string;
+      cwd?: string;
+      host: "gateway" | "node";
+      nodeId?: string;
+    }
+  | undefined {
+  if (params.toolName !== "exec") {
+    return undefined;
+  }
+  const details =
+    params.result && typeof params.result === "object"
+      ? ((params.result as { details?: unknown }).details as Record<string, unknown> | undefined)
+      : undefined;
+  const error = typeof details?.error === "string" ? details.error : "";
+  if (!error.startsWith("exec denied:")) {
+    return undefined;
+  }
+  const args =
+    params.startArgs && typeof params.startArgs === "object"
+      ? (params.startArgs as Record<string, unknown>)
+      : {};
+  const command = typeof args.command === "string" ? args.command.trim() : "";
+  if (!command) {
+    return undefined;
+  }
+  const hostMatch = error.match(/host=(gateway|node)\b/);
+  const argHost = typeof args.host === "string" ? args.host.trim().toLowerCase() : "";
+  const host =
+    hostMatch?.[1] === "node" || argHost === "node"
+      ? "node"
+      : hostMatch?.[1] === "gateway" || argHost === "gateway" || args.elevated === true
+        ? "gateway"
+        : undefined;
+  if (!host) {
+    return undefined;
+  }
+  return {
+    command,
+    cwd: typeof args.workdir === "string" ? args.workdir.trim() || undefined : undefined,
+    host,
+    nodeId: typeof args.node === "string" ? args.node.trim() || undefined : undefined,
+  };
 }
 
 function emitToolResultOutput(params: {
@@ -384,6 +438,42 @@ export async function handleToolExecutionEnd(
       } catch (brokerError) {
         ctx.log.warn(
           `failed to create privilege request for ${denied.path}: ${String(brokerError)}`,
+        );
+      }
+    }
+    const deniedHostExec = readHostExecPrivilegeRequestDetails({
+      toolName,
+      result,
+      startArgs: startData?.args,
+    });
+    if (deniedHostExec) {
+      try {
+        const privilegeResult = await requestHostExecPrivilege({
+          cfg: ctx.params.config,
+          sessionKey: ctx.params.sessionKey,
+          agentId: ctx.params.agentId,
+          request: deniedHostExec,
+        });
+        if (privilegeResult.status === "requested" || privilegeResult.status === "duplicate") {
+          const requestState =
+            privilegeResult.status === "requested" ? "created" : "already pending";
+          const hostLabel =
+            deniedHostExec.host === "node" && deniedHostExec.nodeId
+              ? `${deniedHostExec.host}:${deniedHostExec.nodeId}`
+              : deniedHostExec.host;
+          ctx.state.lastToolError = {
+            toolName,
+            meta,
+            error:
+              `Privilege request ${requestState} for host exec on ${hostLabel}. ` +
+              `Await owner approval (request ${privilegeResult.requestId}).`,
+            mutatingAction: callSummary?.mutatingAction,
+            actionFingerprint: callSummary?.actionFingerprint,
+          };
+        }
+      } catch (brokerError) {
+        ctx.log.warn(
+          `failed to create host exec privilege request for ${deniedHostExec.command}: ${String(brokerError)}`,
         );
       }
     }

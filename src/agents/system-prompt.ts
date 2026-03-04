@@ -467,6 +467,7 @@ export function buildAgentSystemPrompt(params: {
     "Keep narration brief and value-dense; avoid repeating obvious steps.",
     "Use plain human language for narration unless in a technical context.",
     "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
+    "If host access is needed but blocked, do not stop at a refusal: use `request_privilege` to ask for approval. Use `kind=host_exec` for host commands and `kind=fs_grant` for temporary filesystem access outside the workspace.",
     "",
     ...safetySection,
     "## OpenClaw CLI Quick Reference",

@@ -6,7 +6,7 @@ vi.mock("../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
 }));
 
-import { requestMinimumFsPrivilege } from "./privilege-broker.js";
+import { requestHostExecPrivilege, requestMinimumFsPrivilege } from "./privilege-broker.js";
 
 describe("requestMinimumFsPrivilege", () => {
   beforeEach(() => {
@@ -91,5 +91,48 @@ describe("requestMinimumFsPrivilege", () => {
 
     expect(result).toEqual({ status: "duplicate", requestId: "req-existing" });
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a host_exec privilege request for denied host commands", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-04T10:00:00.000Z"));
+    try {
+      callGatewayMock
+        .mockResolvedValueOnce({ requests: [] })
+        .mockResolvedValueOnce({ id: "req-host", expiresAtMs: Date.now() + 1_800_000 });
+
+      const result = await requestHostExecPrivilege({
+        cfg: {},
+        sessionKey: "agent:main:feishu:direct:ou_123",
+        agentId: "main",
+        request: {
+          command: "ls /home",
+          cwd: "/workspace",
+          host: "gateway",
+        },
+      });
+
+      expect(result).toEqual({
+        status: "requested",
+        requestId: "req-host",
+        expiresAtMs: Date.now() + 1_800_000,
+      });
+      expect(callGatewayMock).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          method: "privileged.request",
+          params: expect.objectContaining({
+            kind: "host_exec",
+            payload: expect.objectContaining({
+              command: "ls /home",
+              cwd: "/workspace",
+              host: "gateway",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -50,6 +50,10 @@ function summarizePayload(payload?: Record<string, unknown>): string[] {
     return [];
   }
   const lines: string[] = [];
+  const command = trimString(payload.command);
+  if (command) {
+    lines.push(`- Command: \`${command}\``);
+  }
   const requestPath = trimString(payload.path);
   if (requestPath) {
     lines.push(`- Path: \`${requestPath}\``);
@@ -65,6 +69,14 @@ function summarizePayload(payload?: Record<string, unknown>): string[] {
   const cwd = trimString(payload.cwd);
   if (cwd) {
     lines.push(`- Cwd: \`${cwd}\``);
+  }
+  const host = trimString(payload.host);
+  if (host) {
+    lines.push(`- Host: \`${host}\``);
+  }
+  const nodeId = trimString(payload.nodeId);
+  if (nodeId) {
+    lines.push(`- Node: \`${nodeId}\``);
   }
   return lines;
 }

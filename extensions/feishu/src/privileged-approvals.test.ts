@@ -70,4 +70,24 @@ describe("feishu privileged approvals", () => {
     const body = card.body as { elements?: Array<Record<string, unknown>> } | undefined;
     expect(body?.elements?.some((element) => element.tag === "button")).toBe(false);
   });
+
+  it("includes host exec details in the pending card", () => {
+    const card = buildPendingCard({
+      id: "req-4",
+      kind: "host_exec",
+      status: "pending",
+      justification: "Allow host exec on gateway: ls /home",
+      createdAtMs: 1,
+      expiresAtMs: 2,
+      payload: { command: "ls /home", cwd: "/workspace", host: "gateway" },
+    });
+    const body = card.body as { elements?: Array<Record<string, unknown>> } | undefined;
+    const markdown = body?.elements?.find((element) => element.tag === "markdown");
+    expect(markdown).toMatchObject({
+      content: expect.stringContaining("Command: `ls /home`"),
+    });
+    expect(markdown).toMatchObject({
+      content: expect.stringContaining("Host: `gateway`"),
+    });
+  });
 });

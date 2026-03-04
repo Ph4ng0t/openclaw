@@ -3,9 +3,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { MessagingToolSend } from "./pi-embedded-messaging.js";
 
 const requestMinimumFsPrivilegeMock = vi.hoisted(() => vi.fn());
+const requestHostExecPrivilegeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./privilege-broker.js", () => ({
   requestMinimumFsPrivilege: (params: unknown) => requestMinimumFsPrivilegeMock(params),
+  requestHostExecPrivilege: (params: unknown) => requestHostExecPrivilegeMock(params),
 }));
 
 import {
@@ -397,5 +399,55 @@ describe("messaging tool media URL tracking", () => {
     );
     expect(ctx.state.lastToolError?.error).toContain("Await owner approval");
     expect(ctx.state.lastToolError?.error).toContain("req-123");
+  });
+
+  it("requests host exec privilege when exec is denied on the host", async () => {
+    const { ctx } = createTestContext();
+    requestHostExecPrivilegeMock.mockResolvedValue({
+      status: "requested",
+      requestId: "req-host-1",
+      expiresAtMs: Date.now() + 1_800_000,
+    });
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-exec-denied",
+        args: { command: "ls /home", elevated: true, workdir: "/workspace" },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-exec-denied",
+        isError: true,
+        result: {
+          details: {
+            status: "error",
+            tool: "exec",
+            error: "exec denied: host=gateway security=deny",
+          },
+        },
+      } as never,
+    );
+
+    expect(requestHostExecPrivilegeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: undefined,
+        agentId: undefined,
+        request: expect.objectContaining({
+          command: "ls /home",
+          cwd: "/workspace",
+          host: "gateway",
+        }),
+      }),
+    );
+    expect(ctx.state.lastToolError?.error).toContain("Await owner approval");
+    expect(ctx.state.lastToolError?.error).toContain("req-host-1");
   });
 });

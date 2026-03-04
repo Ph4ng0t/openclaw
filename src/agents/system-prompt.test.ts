@@ -671,6 +671,15 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("## Reactions");
     expect(prompt).toContain("Reactions are enabled for Telegram in MINIMAL mode.");
   });
+
+  it("tells the model to request privilege instead of only refusing blocked host access", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("use `request_privilege` to ask for approval");
+    expect(prompt).toContain("Use `kind=host_exec` for host commands");
+  });
 });
 
 describe("buildSubagentSystemPrompt", () => {
