@@ -1,6 +1,7 @@
 import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent } from "./bot.js";
+import { loadFeishuRuntimeConfig } from "./runtime.js";
 
 export type FeishuCardActionEvent = {
   operator: {
@@ -27,7 +28,8 @@ export async function handleFeishuCardAction(params: {
   runtime?: RuntimeEnv;
   accountId?: string;
 }): Promise<void> {
-  const { cfg, event, runtime, accountId } = params;
+  const cfg = loadFeishuRuntimeConfig(params.cfg);
+  const { event, runtime, accountId } = params;
   const account = resolveFeishuAccount({ cfg, accountId });
   const log = runtime?.log ?? console.log;
 

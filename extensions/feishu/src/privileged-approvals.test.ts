@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildPendingCard, buildResolvedCard, resolveApproverIds } from "./privileged-approvals.js";
+import {
+  buildPendingCard,
+  buildRequesterResolvedText,
+  buildResolvedCard,
+  resolveApproverIds,
+  resolveRequesterRecipientId,
+} from "./privileged-approvals.js";
 
 describe("feishu privileged approvals", () => {
   it("builds a pending approval card with approve and deny buttons", () => {
@@ -81,6 +87,46 @@ describe("feishu privileged approvals", () => {
     expect(recipients).toEqual([]);
   });
 
+  it("resolves the requester recipient only for same-account feishu requests", () => {
+    expect(
+      resolveRequesterRecipientId({
+        accountId: "default",
+        request: {
+          id: "req-2b",
+          kind: "host_exec",
+          status: "executed",
+          justification: "Run ls",
+          createdAtMs: 1,
+          expiresAtMs: 2,
+          requestedBy: {
+            channel: "feishu",
+            accountId: "default",
+            senderId: "ou-requester",
+          },
+        },
+      }),
+    ).toBe("ou-requester");
+
+    expect(
+      resolveRequesterRecipientId({
+        accountId: "default",
+        request: {
+          id: "req-2c",
+          kind: "host_exec",
+          status: "executed",
+          justification: "Run ls",
+          createdAtMs: 1,
+          expiresAtMs: 2,
+          requestedBy: {
+            channel: "slack",
+            accountId: "default",
+            senderId: "ou-requester",
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("builds a resolved card without action buttons", () => {
     const card = buildResolvedCard({
       id: "req-3",
@@ -114,5 +160,32 @@ describe("feishu privileged approvals", () => {
     expect(markdown).toMatchObject({
       content: expect.stringContaining("Host: `gateway`"),
     });
+  });
+
+  it("builds a requester-facing host exec result message with command output", () => {
+    expect(
+      buildRequesterResolvedText({
+        id: "req-5",
+        kind: "host_exec",
+        status: "executed",
+        justification: "Run ls",
+        createdAtMs: 1,
+        expiresAtMs: 2,
+        payload: { command: "ls /home/lawliet/cloud", cwd: "/home/lawliet" },
+        result: { ok: true, message: "a.txt\nb.txt" },
+      }),
+    ).toContain("a.txt\nb.txt");
+
+    expect(
+      buildRequesterResolvedText({
+        id: "req-6",
+        kind: "fs_grant",
+        status: "executed",
+        justification: "Grant repo access",
+        createdAtMs: 1,
+        expiresAtMs: 2,
+        result: { ok: true, message: "Granted" },
+      }),
+    ).toBeNull();
   });
 });

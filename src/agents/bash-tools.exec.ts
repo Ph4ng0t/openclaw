@@ -34,6 +34,7 @@ import type {
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
+import { isPrivilegedHostExecCommand } from "./bash-tools.host-exec-privilege.js";
 import {
   buildSandboxEnv,
   clampWithDefault,
@@ -43,6 +44,7 @@ import {
   resolveWorkdir,
   truncateMiddle,
 } from "./bash-tools.shared.js";
+import { requestHostExecPrivilege } from "./privilege-broker.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
@@ -421,6 +423,56 @@ export function createExecTool(
           notifySessionKey,
           trustedSafeBinDirs,
         });
+      }
+
+      const requiresPrivilegedHostExec =
+        host === "gateway" &&
+        isPrivilegedHostExecCommand({
+          command: params.command,
+          cwd: workdir,
+          env,
+          platform: process.platform,
+        });
+      if (requiresPrivilegedHostExec) {
+        const privilegeResult = await requestHostExecPrivilege({
+          sessionKey: defaults?.sessionKey,
+          agentId,
+          channel: defaults?.messageProvider as
+            | Parameters<typeof requestHostExecPrivilege>[0]["channel"]
+            | undefined,
+          accountId: defaults?.accountId,
+          senderId: defaults?.senderId,
+          request: {
+            command: params.command,
+            cwd: workdir,
+            host: "gateway",
+          },
+        });
+        if (privilegeResult.status === "requested" || privilegeResult.status === "duplicate") {
+          const requestState =
+            privilegeResult.status === "requested" ? "created" : "already pending";
+          const expiresAtMs =
+            privilegeResult.status === "requested" ? privilegeResult.expiresAtMs : undefined;
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Privileged approval ${requestState} for destructive host command. ` +
+                  `Await owner approval (request ${privilegeResult.requestId}).`,
+              },
+            ],
+            details: {
+              status: "privileged-pending",
+              requestId: privilegeResult.requestId,
+              expiresAtMs,
+              kind: "host_exec",
+              host: "gateway",
+              command: params.command,
+              cwd: workdir,
+            },
+          };
+        }
       }
 
       if (host === "gateway" && !bypassApprovals) {

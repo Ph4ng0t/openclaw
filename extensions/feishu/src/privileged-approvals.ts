@@ -8,7 +8,8 @@ import {
   type EventFrame,
   type RuntimeEnv,
 } from "openclaw/plugin-sdk";
-import { sendCardFeishu, updateCardFeishu } from "./send.js";
+import { loadFeishuRuntimeConfig } from "./runtime.js";
+import { sendCardFeishu, sendMessageFeishu, updateCardFeishu } from "./send.js";
 
 type PrivilegedRequestRecord = {
   id: string;
@@ -79,6 +80,56 @@ function summarizePayload(payload?: Record<string, unknown>): string[] {
     lines.push(`- Node: \`${nodeId}\``);
   }
   return lines;
+}
+
+function resolveRequesterRecipientId(params: {
+  accountId: string;
+  request: PrivilegedRequestRecord;
+}): string | undefined {
+  const senderId = trimString(params.request.requestedBy?.senderId);
+  const requestAccountId = trimString(params.request.requestedBy?.accountId);
+  if (
+    trimString(params.request.requestedBy?.channel) !== "feishu" ||
+    !senderId ||
+    (requestAccountId && requestAccountId !== params.accountId)
+  ) {
+    return undefined;
+  }
+  return senderId;
+}
+
+function buildRequesterResolvedText(request: PrivilegedRequestRecord): string | null {
+  if (
+    request.kind !== "host_exec" ||
+    request.status === "pending" ||
+    request.status === "approved"
+  ) {
+    return null;
+  }
+
+  const payload = request.payload ?? {};
+  const command = trimString(payload.command);
+  const cwd = trimString(payload.cwd);
+  const resultMessage = trimString(request.result?.message);
+  const headline =
+    request.status === "executed"
+      ? "Privileged host command executed."
+      : request.status === "denied"
+        ? "Privileged host command request denied."
+        : request.status === "expired"
+          ? "Privileged host command request expired."
+          : "Privileged host command failed.";
+
+  const lines = [
+    headline,
+    `Request ID: ${request.id}`,
+    command ? `Command: ${command}` : "",
+    cwd ? `Cwd: ${cwd}` : "",
+    resultMessage ? "" : "",
+    resultMessage ? resultMessage : "",
+  ].filter(Boolean);
+
+  return lines.join("\n");
 }
 
 function buildPendingCard(request: PrivilegedRequestRecord): Record<string, unknown> {
@@ -196,14 +247,9 @@ function resolveApproverIds(params: {
   request: PrivilegedRequestRecord;
 }): string[] {
   const recipients = new Set<string>();
-  const senderId = trimString(params.request.requestedBy?.senderId);
-  const requestAccountId = trimString(params.request.requestedBy?.accountId);
-  if (
-    trimString(params.request.requestedBy?.channel) === "feishu" &&
-    senderId &&
-    (!requestAccountId || requestAccountId === params.accountId)
-  ) {
-    recipients.add(senderId);
+  const requesterRecipientId = resolveRequesterRecipientId(params);
+  if (requesterRecipientId) {
+    recipients.add(requesterRecipientId);
   }
   const allowFrom = params.cfg.channels?.feishu?.allowFrom ?? [];
   for (const entry of allowFrom) {
@@ -228,6 +274,10 @@ export class FeishuPrivilegedApprovalHandler {
       runtime?: RuntimeEnv;
     },
   ) {}
+
+  private resolveCurrentConfig(): ClawdbotConfig {
+    return loadFeishuRuntimeConfig(this.opts.cfg);
+  }
 
   async start(): Promise<void> {
     if (this.started) {
@@ -281,8 +331,9 @@ export class FeishuPrivilegedApprovalHandler {
   }
 
   private async handleRequested(request: PrivilegedRequestRecord): Promise<void> {
+    const cfg = this.resolveCurrentConfig();
     const recipients = resolveApproverIds({
-      cfg: this.opts.cfg,
+      cfg,
       accountId: this.opts.accountId,
       request,
     });
@@ -294,7 +345,7 @@ export class FeishuPrivilegedApprovalHandler {
     for (const recipientId of recipients) {
       try {
         const result = await sendCardFeishu({
-          cfg: this.opts.cfg,
+          cfg,
           to: recipientId,
           card,
           accountId: this.opts.accountId,
@@ -315,28 +366,55 @@ export class FeishuPrivilegedApprovalHandler {
 
   private async handleResolved(request: PrivilegedRequestRecord): Promise<void> {
     const sent = this.sentCards.get(request.id);
-    if (!sent || sent.length === 0) {
-      return;
+    const cfg = this.resolveCurrentConfig();
+    if (sent && sent.length > 0) {
+      const card = buildResolvedCard(request);
+      for (const entry of sent) {
+        try {
+          await updateCardFeishu({
+            cfg,
+            messageId: entry.messageId,
+            card,
+            accountId: this.opts.accountId,
+          });
+        } catch (error) {
+          this.opts.runtime?.error?.(
+            `feishu[${this.opts.accountId}]: failed to update privileged approval card ${entry.messageId}: ${String(error)}`,
+          );
+        }
+      }
     }
-    const card = buildResolvedCard(request);
-    for (const entry of sent) {
+
+    const requesterRecipientId = resolveRequesterRecipientId({
+      accountId: this.opts.accountId,
+      request,
+    });
+    const requesterText = requesterRecipientId ? buildRequesterResolvedText(request) : null;
+    if (requesterRecipientId && requesterText) {
       try {
-        await updateCardFeishu({
-          cfg: this.opts.cfg,
-          messageId: entry.messageId,
-          card,
+        await sendMessageFeishu({
+          cfg,
+          to: requesterRecipientId,
+          text: requesterText,
           accountId: this.opts.accountId,
         });
       } catch (error) {
         this.opts.runtime?.error?.(
-          `feishu[${this.opts.accountId}]: failed to update privileged approval card ${entry.messageId}: ${String(error)}`,
+          `feishu[${this.opts.accountId}]: failed to send privileged result to ${requesterRecipientId}: ${String(error)}`,
         );
       }
     }
+
     if (request.status !== "pending") {
       this.sentCards.delete(request.id);
     }
   }
 }
 
-export { buildPendingCard, buildResolvedCard, resolveApproverIds };
+export {
+  buildPendingCard,
+  buildRequesterResolvedText,
+  buildResolvedCard,
+  resolveApproverIds,
+  resolveRequesterRecipientId,
+};

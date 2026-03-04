@@ -11,6 +11,7 @@ const RequestPrivilegeSchema = Type.Object({
   justification: Type.String({ description: "Human-facing reason for the request." }),
   path: Type.Optional(Type.String()),
   access: Type.Optional(Type.String()),
+  command: Type.Optional(Type.String()),
   commandId: Type.Optional(Type.String()),
   argv: Type.Optional(Type.Array(Type.String())),
   cwd: Type.Optional(Type.String()),
@@ -32,7 +33,7 @@ export function createRequestPrivilegeTool(opts?: {
     label: "Request Privilege",
     name: "request_privilege",
     description:
-      "Create a privileged action proposal for owner approval. Use `kind=fs_grant` with `path` + `access=ro|rw` for filesystem access, or `kind=host_exec` for host commands. This tool never executes the action itself.",
+      "Create a privileged action proposal for owner approval. Use `kind=fs_grant` with `path` + `access=ro|rw` for filesystem access, or `kind=host_exec` with `command` for host commands. This tool never executes the action itself.",
     parameters: RequestPrivilegeSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -46,6 +47,10 @@ export function createRequestPrivilegeTool(opts?: {
       const access = readStringParam(params, "access");
       if (access) {
         payload.access = access;
+      }
+      const command = readStringParam(params, "command");
+      if (command) {
+        payload.command = command;
       }
       const commandId = readStringParam(params, "commandId");
       if (commandId) {

@@ -404,6 +404,7 @@ export function createOpenClawCodingTools(options?: {
     currentChannelId: options?.currentChannelId,
     currentThreadTs: options?.currentThreadTs,
     accountId: options?.agentAccountId,
+    senderId: options?.senderId ?? undefined,
     backgroundMs: options?.exec?.backgroundMs ?? execConfig.backgroundMs,
     timeoutSec: options?.exec?.timeoutSec ?? execConfig.timeoutSec,
     approvalRunningNoticeMs:

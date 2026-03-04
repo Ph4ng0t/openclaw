@@ -4,7 +4,11 @@ import { promisify } from "node:util";
 import { readConfigFileSnapshot, writeConfigFile } from "../config/config.js";
 import { applyMergePatch } from "../config/merge-patch.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
+import { buildNodeShellCommand } from "../infra/node-shell.js";
+import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getPrivilegedCommandSpec, type PrivilegedCommandSpec } from "./command-registry.js";
+import { refreshSandboxForFsGrant } from "./sandbox-refresh.js";
 import type { PrivilegedRequestRecord } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -45,7 +49,23 @@ export async function applyPrivilegedRequest(record: PrivilegedRequestRecord): P
     });
   }
   if (record.kind === "host_exec") {
-    const payload = record.payload as { commandId?: string; argv?: string[]; cwd?: string };
+    const payload = record.payload as {
+      command?: string;
+      commandId?: string;
+      argv?: string[];
+      cwd?: string;
+      host?: string;
+      nodeId?: string;
+    };
+    const command = typeof payload.command === "string" ? payload.command.trim() : "";
+    if (command) {
+      return await runHostCommand({
+        command,
+        cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
+        host: payload.host,
+        nodeId: payload.nodeId,
+      });
+    }
     const commandId = typeof payload.commandId === "string" ? payload.commandId : "";
     return await runRegisteredCommand({
       command: getRequiredCommand(commandId),
@@ -84,7 +104,11 @@ async function applyFsGrant(record: PrivilegedRequestRecord): Promise<string> {
   });
   cfg.tools = { ...cfg.tools, fs: { ...cfg.tools?.fs, grants: next } };
   await writeConfigFile(cfg);
-  return `Granted ${access} access to ${grantPath}`;
+  const refreshMessage = await refreshSandboxAfterFsGrant({ cfg, record });
+  const retryMessage = queueFsGrantRetry({ record, grantPath, access, refreshMessage });
+  return [`Granted ${access} access to ${grantPath}`, refreshMessage, retryMessage]
+    .filter(Boolean)
+    .join(" ");
 }
 
 async function applyFsRevoke(record: PrivilegedRequestRecord): Promise<string> {
@@ -195,4 +219,67 @@ async function runRegisteredCommand(params: {
     encoding: "utf8",
   });
   return [stdout?.trim(), stderr?.trim()].filter(Boolean).join("\n");
+}
+
+async function runHostCommand(params: {
+  command: string;
+  cwd?: string;
+  host?: string;
+  nodeId?: string;
+}): Promise<string> {
+  if (params.host === "node") {
+    const label = params.nodeId?.trim() ? `:${params.nodeId.trim()}` : "";
+    throw new Error(`host_exec for node${label} is not supported by privileged approvals`);
+  }
+  const argv = buildNodeShellCommand(params.command, process.platform);
+  const { stdout, stderr } = await execFileAsync(argv[0], argv.slice(1), {
+    cwd: params.cwd,
+    encoding: "utf8",
+  });
+  return [stdout?.trim(), stderr?.trim()].filter(Boolean).join("\n") || "Host command completed.";
+}
+
+async function refreshSandboxAfterFsGrant(params: {
+  cfg: OpenClawConfig;
+  record: PrivilegedRequestRecord;
+}): Promise<string | null> {
+  try {
+    return await refreshSandboxForFsGrant({
+      cfg: params.cfg,
+      requestedBy: params.record.requestedBy,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Sandbox refresh pending (${message}).`;
+  }
+}
+
+function queueFsGrantRetry(params: {
+  record: PrivilegedRequestRecord;
+  grantPath: string;
+  access: "ro" | "rw";
+  refreshMessage: string | null;
+}): string | null {
+  const sessionKey = params.record.requestedBy?.sessionKey?.trim();
+  if (!sessionKey) {
+    return null;
+  }
+  const accessLabel = params.access === "rw" ? "read/write" : "read-only";
+  const refreshLabel = params.refreshMessage
+    ? "The sandbox was refreshed automatically."
+    : "If a sandbox is active, it will pick up the new grant on the next container start.";
+  enqueueSystemEvent(
+    [
+      `Filesystem permission approved for ${params.grantPath} (${accessLabel}).`,
+      refreshLabel,
+      "Immediately retry the blocked file operation that needed this path.",
+    ].join(" "),
+    { sessionKey },
+  );
+  requestHeartbeatNow({
+    reason: "privileged:fs-grant-approved",
+    sessionKey,
+    agentId: params.record.requestedBy?.agentId ?? undefined,
+  });
+  return "Queued an automatic retry for the waiting agent.";
 }

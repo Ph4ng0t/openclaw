@@ -27,7 +27,7 @@ import {
 } from "./policy.js";
 import { parsePostContent } from "./post.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
-import { getFeishuRuntime } from "./runtime.js";
+import { getFeishuRuntime, loadFeishuRuntimeConfig } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } from "./types.js";
 import type { DynamicAgentCreationConfig } from "./types.js";
@@ -867,7 +867,8 @@ export async function handleFeishuMessage(params: {
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
 }): Promise<void> {
-  const { cfg, event, botOpenId, botName, runtime, chatHistories, accountId } = params;
+  const { event, botOpenId, botName, runtime, chatHistories, accountId } = params;
+  const cfg = loadFeishuRuntimeConfig(params.cfg);
 
   // Resolve account with merged config
   const account = resolveFeishuAccount({ cfg, accountId });

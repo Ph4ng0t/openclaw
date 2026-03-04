@@ -130,6 +130,7 @@ describe("handleFeishuMessage command authorization", () => {
   const mockUpsertPairingRequest = vi.fn().mockResolvedValue({ code: "ABCDEFGH", created: false });
   const mockBuildPairingReply = vi.fn(() => "Pairing response");
   const mockEnqueueSystemEvent = vi.fn();
+  const mockLoadConfig = vi.fn<() => ClawdbotConfig>();
   const mockSaveMediaBuffer = vi.fn().mockResolvedValue({
     id: "inbound-clip.mp4",
     path: "/tmp/inbound-clip.mp4",
@@ -156,8 +157,12 @@ describe("handleFeishuMessage command authorization", () => {
       },
     });
     mockEnqueueSystemEvent.mockReset();
+    mockLoadConfig.mockReset().mockReturnValue({});
     setFeishuRuntime(
       createPluginRuntimeMock({
+        config: {
+          loadConfig: mockLoadConfig as unknown as PluginRuntime["config"]["loadConfig"],
+        },
         system: {
           enqueueSystemEvent: mockEnqueueSystemEvent,
         },
@@ -309,6 +314,55 @@ describe("handleFeishuMessage command authorization", () => {
     expect(mockResolveCommandAuthorizedFromAuthorizers).not.toHaveBeenCalled();
     expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatches with the latest runtime config so new fs grants reach sandbox creation", async () => {
+    const staleCfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+    const liveCfg: ClawdbotConfig = {
+      ...staleCfg,
+      tools: {
+        fs: {
+          grants: [{ path: "/tmp/granted", access: "ro" }],
+        },
+      },
+    } as ClawdbotConfig;
+    mockLoadConfig.mockReturnValue(liveCfg);
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-attacker",
+        },
+      },
+      message: {
+        message_id: `msg-live-config-fs-grant-${Date.now()}`,
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "read /tmp/granted" }),
+      },
+    };
+
+    await dispatchMessage({ cfg: staleCfg, event });
+
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          tools: {
+            fs: {
+              grants: [{ path: "/tmp/granted", access: "ro" }],
+            },
+          },
+        }),
+      }),
+    );
   });
 
   it("skips sender-name lookup when resolveSenderNames is false", async () => {

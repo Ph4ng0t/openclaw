@@ -24,6 +24,7 @@ export type ExecToolDefaults = {
   currentChannelId?: string;
   currentThreadTs?: string;
   accountId?: string;
+  senderId?: string;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   cwd?: string;
@@ -57,6 +58,16 @@ export type ExecToolDetails =
       approvalSlug: string;
       expiresAtMs: number;
       host: ExecHost;
+      command: string;
+      cwd?: string;
+      nodeId?: string;
+    }
+  | {
+      status: "privileged-pending";
+      requestId: string;
+      expiresAtMs?: number;
+      kind: "host_exec";
+      host: Exclude<ExecHost, "sandbox">;
       command: string;
       cwd?: string;
       nodeId?: string;

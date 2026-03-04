@@ -74,4 +74,36 @@ describe("request_privilege tool", () => {
       },
     ]);
   });
+
+  it("creates a host_exec request with the raw command payload", async () => {
+    const tool = requireRequestPrivilegeTool();
+
+    await tool.execute("call2", {
+      kind: "host_exec",
+      justification: "Create a marker file outside the workspace",
+      command: "touch /home/lawliet/ai/foo",
+      cwd: "/home/lawliet",
+    });
+
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "privileged.request",
+        params: expect.objectContaining({
+          kind: "host_exec",
+          justification: "Create a marker file outside the workspace",
+          payload: {
+            command: "touch /home/lawliet/ai/foo",
+            cwd: "/home/lawliet",
+          },
+          requestedBy: {
+            channel: "feishu",
+            accountId: "default",
+            senderId: "ou_requester",
+            sessionKey: "agent:main:feishu:direct:ou_requester",
+            agentId: "main",
+          },
+        }),
+      }),
+    );
+  });
 });
