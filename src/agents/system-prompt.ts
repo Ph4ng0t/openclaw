@@ -387,12 +387,11 @@ export function buildAgentSystemPrompt(params: {
       : sanitizedWorkspaceDir;
   const workspaceGuidance =
     params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
-      ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. For bash/exec commands, use sandbox container paths under ${sanitizedSandboxContainerWorkspace} (or relative paths from that workdir), not host paths. Prefer relative paths so both sandboxed exec and file tools work consistently.`
+      ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. Treat user-mentioned absolute paths as host paths even in sandbox sessions. For bash/exec commands, use the same host path whenever that path is mounted in the sandbox; otherwise use relative paths from ${sanitizedSandboxContainerWorkspace}. If access is blocked, keep the host path and request privilege instead of rewriting it into an internal sandbox-only path.`
       : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.";
   const sandboxGrantLines =
     params.sandboxInfo?.fsGrants?.map(
-      (grant) =>
-        `Granted path: ${sanitizeForPromptLiteral(grant.hostPath)} -> ${sanitizeForPromptLiteral(grant.containerPath)} (${grant.access})`,
+      (grant) => `Granted path: ${sanitizeForPromptLiteral(grant.hostPath)} (${grant.access})`,
     ) ?? [];
   const safetySection = [
     "## Safety",
@@ -531,7 +530,10 @@ export function buildAgentSystemPrompt(params: {
             : "",
           ...sandboxGrantLines,
           sandboxGrantLines.length > 0
-            ? "For sandbox bash/exec inside granted directories, use the /grants/... container path or set workdir there. Host grant paths are not valid inside sandbox exec."
+            ? "Granted filesystem paths stay addressable by their original host absolute path inside the sandbox."
+            : "",
+          sandboxGrantLines.length > 0
+            ? "When the user names a path, keep using that host path in tool calls and privilege requests instead of translating it to an internal mount alias."
             : "",
           params.sandboxInfo.workspaceAccess
             ? `Agent workspace access: ${params.sandboxInfo.workspaceAccess}${

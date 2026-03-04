@@ -95,6 +95,7 @@ export type EmbeddedSandboxInfo = {
   containerWorkspaceDir?: string;
   fsGrants?: Array<{
     hostPath: string;
+    /** Internal mount path. Keep user/model-facing text on hostPath. */
     containerPath: string;
     access: "ro" | "rw";
   }>;

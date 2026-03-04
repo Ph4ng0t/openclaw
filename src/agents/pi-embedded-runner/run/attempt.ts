@@ -1251,6 +1251,9 @@ export async function runEmbeddedAttempt(
         sessionKey: sandboxSessionKey,
         sessionId: params.sessionId,
         agentId: sessionAgentId,
+        messageChannel: params.messageChannel ?? params.messageProvider,
+        agentAccountId: params.agentAccountId,
+        senderId: params.senderId,
       });
 
       const {

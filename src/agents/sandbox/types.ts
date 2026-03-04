@@ -1,3 +1,4 @@
+import type { ToolFsGrant } from "../tool-fs-policy.js";
 import type { SandboxFsBridge } from "./fs-bridge.js";
 import type { SandboxDockerConfig } from "./types.docker.js";
 
@@ -82,6 +83,7 @@ export type SandboxContext = {
   browserAllowHostControl: boolean;
   browser?: SandboxBrowserContext;
   fsBridge?: SandboxFsBridge;
+  fsGrants?: ToolFsGrant[];
 };
 
 export type SandboxWorkspaceInfo = {

@@ -35,6 +35,9 @@ function createTestContext(): {
       onBlockReplyFlush,
       onAgentEvent: undefined,
       onToolResult: undefined,
+      messageChannel: "feishu",
+      agentAccountId: "default",
+      senderId: "ou_123",
     },
     flushBlockReplyBuffer: vi.fn(),
     hookRunner: undefined,
@@ -391,6 +394,9 @@ describe("messaging tool media URL tracking", () => {
       expect.objectContaining({
         sessionKey: undefined,
         agentId: undefined,
+        channel: "feishu",
+        accountId: "default",
+        senderId: "ou_123",
         error: expect.objectContaining({
           kind: "fs_access_denied",
           path: "/tmp/private.txt",
@@ -440,6 +446,9 @@ describe("messaging tool media URL tracking", () => {
       expect.objectContaining({
         sessionKey: undefined,
         agentId: undefined,
+        channel: "feishu",
+        accountId: "default",
+        senderId: "ou_123",
         request: expect.objectContaining({
           command: "ls /home",
           cwd: "/workspace",

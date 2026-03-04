@@ -35,6 +35,12 @@ export type SubscribeEmbeddedPiSessionParams = {
   sessionId?: string;
   /** Agent identity for hook context — resolved from session config in attempt.ts. */
   agentId?: string;
+  /** Originating message channel for privilege approval routing. */
+  messageChannel?: string;
+  /** Originating account id for privilege approval routing. */
+  agentAccountId?: string;
+  /** Originating sender id for privilege approval routing. */
+  senderId?: string | null;
 };
 
 export type { BlockReplyChunking } from "./pi-embedded-block-chunker.js";

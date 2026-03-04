@@ -43,9 +43,10 @@ describe("buildEmbeddedSandboxInfo", () => {
 
   it("maps sandbox context into prompt info", () => {
     const sandbox = createSandboxContext({
+      fsGrants: [{ path: "/home/lawliet/projects", access: "ro" }],
       docker: {
         ...createSandboxContext().docker,
-        binds: ["/home/lawliet/projects:/grants/projects-ro:ro"],
+        binds: ["/home/lawliet/projects:/home/lawliet/projects:ro"],
       },
     });
 
@@ -56,7 +57,7 @@ describe("buildEmbeddedSandboxInfo", () => {
       fsGrants: [
         {
           hostPath: "/home/lawliet/projects",
-          containerPath: "/grants/projects-ro",
+          containerPath: "/home/lawliet/projects",
           access: "ro",
         },
       ],

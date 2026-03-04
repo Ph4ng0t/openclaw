@@ -188,11 +188,11 @@ export function resolveSandboxConfigForAgent(
 
   const toolPolicy = resolveSandboxToolPolicyForAgent(cfg, agentId);
   const fsConfig = resolveToolFsConfig({ cfg, agentId });
-  const fsGrantBinds = normalizeToolFsGrants(fsConfig.grants).map((grant, index) => {
-    const suffix = grant.id?.trim() || `${index + 1}-${grant.access}`;
-    const safeSuffix = suffix.replace(/[^a-zA-Z0-9._-]/g, "-");
+  const fsGrantBinds = normalizeToolFsGrants(fsConfig.grants).map((grant) => {
     const mode = grant.access === "ro" ? "ro" : "rw";
-    return `${grant.path}:/grants/${safeSuffix}:${mode}`;
+    // Keep granted host paths addressable by the same absolute path inside the sandbox
+    // so users and models never need to translate to an internal mount alias.
+    return `${grant.path}:${grant.path}:${mode}`;
   });
   const docker = resolveSandboxDockerConfig({
     scope,

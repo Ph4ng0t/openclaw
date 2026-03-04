@@ -25,6 +25,9 @@ describe("requestMinimumFsPrivilege", () => {
         cfg: {},
         sessionKey: "agent:main:feishu:direct:ou_123",
         agentId: "main",
+        channel: "feishu",
+        accountId: "default",
+        senderId: "ou_123",
         error: {
           kind: "fs_access_denied",
           path: "/tmp/private.txt",
@@ -52,6 +55,13 @@ describe("requestMinimumFsPrivilege", () => {
             payload: expect.objectContaining({
               path: "/tmp/private.txt",
               access: "ro",
+            }),
+            requestedBy: expect.objectContaining({
+              channel: "feishu",
+              accountId: "default",
+              senderId: "ou_123",
+              sessionKey: "agent:main:feishu:direct:ou_123",
+              agentId: "main",
             }),
           }),
         }),
@@ -105,6 +115,9 @@ describe("requestMinimumFsPrivilege", () => {
         cfg: {},
         sessionKey: "agent:main:feishu:direct:ou_123",
         agentId: "main",
+        channel: "feishu",
+        accountId: "default",
+        senderId: "ou_123",
         request: {
           command: "ls /home",
           cwd: "/workspace",
@@ -127,6 +140,13 @@ describe("requestMinimumFsPrivilege", () => {
               command: "ls /home",
               cwd: "/workspace",
               host: "gateway",
+            }),
+            requestedBy: expect.objectContaining({
+              channel: "feishu",
+              accountId: "default",
+              senderId: "ou_123",
+              sessionKey: "agent:main:feishu:direct:ou_123",
+              agentId: "main",
             }),
           }),
         }),

@@ -140,6 +140,9 @@ export type ToolHandlerParams = Pick<
   | "sessionKey"
   | "sessionId"
   | "agentId"
+  | "messageChannel"
+  | "agentAccountId"
+  | "senderId"
 >;
 
 export type ToolHandlerState = Pick<

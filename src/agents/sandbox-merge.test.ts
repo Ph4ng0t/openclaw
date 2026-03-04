@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveSandboxConfigForAgent,
   resolveSandboxBrowserConfig,
   resolveSandboxDockerConfig,
   resolveSandboxPruneConfig,
@@ -127,5 +128,24 @@ describe("sandbox config merges", () => {
       agentPrune: { idleHours: 0, maxAgeDays: 1 },
     });
     expect(pruneShared).toEqual({ idleHours: 24, maxAgeDays: 7 });
+  });
+
+  it("mounts fs grants at the same absolute host path inside the sandbox", () => {
+    const resolved = resolveSandboxConfigForAgent({
+      tools: {
+        fs: {
+          grants: [{ path: "/home/lawliet/projects", access: "ro" }],
+        },
+      },
+      agents: {
+        defaults: {
+          sandbox: {
+            mode: "docker",
+          },
+        },
+      },
+    });
+
+    expect(resolved.docker.binds).toContain("/home/lawliet/projects:/home/lawliet/projects:ro");
   });
 });

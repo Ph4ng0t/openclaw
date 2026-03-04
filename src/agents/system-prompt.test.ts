@@ -631,7 +631,7 @@ describe("buildAgentSystemPrompt", () => {
         fsGrants: [
           {
             hostPath: "/home/lawliet/projects",
-            containerPath: "/grants/projects-ro",
+            containerPath: "/home/lawliet/projects",
             access: "ro",
           },
         ],
@@ -643,16 +643,20 @@ describe("buildAgentSystemPrompt", () => {
 
     expect(prompt).toContain("Your working directory is: /workspace");
     expect(prompt).toContain(
-      "For read/write/edit/apply_patch, file paths resolve against host workspace: /tmp/openclaw. For bash/exec commands, use sandbox container paths under /workspace (or relative paths from that workdir), not host paths.",
+      "For read/write/edit/apply_patch, file paths resolve against host workspace: /tmp/openclaw. Treat user-mentioned absolute paths as host paths even in sandbox sessions.",
     );
     expect(prompt).toContain("Sandbox container workdir: /workspace");
     expect(prompt).toContain(
       "Sandbox host mount source (file tools bridge only; not valid inside sandbox exec): /tmp/sandbox",
     );
-    expect(prompt).toContain("Granted path: /home/lawliet/projects -> /grants/projects-ro (ro)");
+    expect(prompt).toContain("Granted path: /home/lawliet/projects (ro)");
     expect(prompt).toContain(
-      "For sandbox bash/exec inside granted directories, use the /grants/... container path or set workdir there.",
+      "Granted filesystem paths stay addressable by their original host absolute path inside the sandbox.",
     );
+    expect(prompt).toContain(
+      "When the user names a path, keep using that host path in tool calls and privilege requests instead of translating it to an internal mount alias.",
+    );
+    expect(prompt).not.toContain("/grants/");
     expect(prompt).toContain("You are running in a sandboxed runtime");
     expect(prompt).toContain("Sub-agents stay sandboxed");
     expect(prompt).toContain("User can toggle with /elevated on|off|ask|full.");

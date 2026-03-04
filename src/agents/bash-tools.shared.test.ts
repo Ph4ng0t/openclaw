@@ -83,7 +83,7 @@ describe("resolveSandboxWorkdir", () => {
         await mkdir(grantedDir, { recursive: true });
         const warnings: string[] = [];
         const resolved = await resolveSandboxWorkdir({
-          workdir: "/grants/projects-ro/repo",
+          workdir: `${grantRoot}/repo`,
           sandbox: {
             containerName: "sandbox-4",
             workspaceDir,
@@ -97,7 +97,7 @@ describe("resolveSandboxWorkdir", () => {
               },
               {
                 hostRoot: grantRoot,
-                containerRoot: "/grants/projects-ro",
+                containerRoot: grantRoot,
                 writable: false,
                 source: "bind",
               },
@@ -107,7 +107,7 @@ describe("resolveSandboxWorkdir", () => {
         });
 
         expect(resolved.hostWorkdir).toBe(grantedDir);
-        expect(resolved.containerWorkdir).toBe("/grants/projects-ro/repo");
+        expect(resolved.containerWorkdir).toBe(`${grantRoot}/repo`);
         expect(warnings).toEqual([]);
       } finally {
         await rm(grantRoot, { recursive: true, force: true });

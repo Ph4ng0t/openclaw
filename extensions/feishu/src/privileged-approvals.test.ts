@@ -56,6 +56,31 @@ describe("feishu privileged approvals", () => {
     expect(recipients).toEqual(["ou-admin", "ou-audit"]);
   });
 
+  it("cannot route requester approval cards without feishu requester context", () => {
+    const recipients = resolveApproverIds({
+      cfg: {
+        channels: {
+          feishu: {
+            allowFrom: [],
+          },
+        },
+      },
+      accountId: "default",
+      request: {
+        id: "req-missing-origin",
+        kind: "host_exec",
+        status: "pending",
+        justification: "Allow host exec on gateway: ls /home/lawliet/projects",
+        createdAtMs: 1,
+        expiresAtMs: 2,
+        requestedBy: {
+          sessionKey: "agent:main:feishu:direct:ou_requester",
+        },
+      },
+    });
+    expect(recipients).toEqual([]);
+  });
+
   it("builds a resolved card without action buttons", () => {
     const card = buildResolvedCard({
       id: "req-3",

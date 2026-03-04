@@ -11,13 +11,24 @@ export function buildEmbeddedSandboxInfo(
     return undefined;
   }
   const elevatedAllowed = Boolean(execElevated?.enabled && execElevated.allowed);
-  const fsGrants = buildSandboxFsMounts(sandbox)
-    .filter((mount) => mount.source === "bind" && mount.containerRoot.startsWith("/grants/"))
-    .map((mount) => ({
-      hostPath: mount.hostRoot,
-      containerPath: mount.containerRoot,
-      access: mount.writable ? ("rw" as const) : ("ro" as const),
-    }));
+  const bindMountsByHost = new Map(
+    buildSandboxFsMounts(sandbox)
+      .filter((mount) => mount.source === "bind")
+      .map((mount) => [mount.hostRoot, mount] as const),
+  );
+  const fsGrants = (sandbox.fsGrants ?? [])
+    .map((grant) => {
+      const mount = bindMountsByHost.get(grant.path);
+      if (!mount) {
+        return undefined;
+      }
+      return {
+        hostPath: mount.hostRoot,
+        containerPath: mount.containerRoot,
+        access: mount.writable ? ("rw" as const) : ("ro" as const),
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   return {
     enabled: true,
     workspaceDir: sandbox.workspaceDir,

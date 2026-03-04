@@ -422,6 +422,9 @@ export async function handleToolExecutionEnd(
           error: (result as { details?: unknown }).details as FsAccessDeniedPayload,
           sessionKey: ctx.params.sessionKey,
           agentId: ctx.params.agentId,
+          channel: ctx.params.messageChannel,
+          accountId: ctx.params.agentAccountId,
+          senderId: ctx.params.senderId,
         });
         if (privilegeResult.status === "requested" || privilegeResult.status === "duplicate") {
           const actionLabel = denied.requestedAccess === "write" ? "write access" : "read access";
@@ -452,6 +455,9 @@ export async function handleToolExecutionEnd(
           cfg: ctx.params.config,
           sessionKey: ctx.params.sessionKey,
           agentId: ctx.params.agentId,
+          channel: ctx.params.messageChannel,
+          accountId: ctx.params.agentAccountId,
+          senderId: ctx.params.senderId,
           request: deniedHostExec,
         });
         if (privilegeResult.status === "requested" || privilegeResult.status === "duplicate") {

@@ -6,6 +6,7 @@ import { loadConfig } from "../../config/config.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveUserPath } from "../../utils.js";
 import { syncSkillsToWorkspace } from "../skills.js";
+import { normalizeToolFsGrants, resolveToolFsConfig } from "../tool-fs-policy.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "../workspace.js";
 import { ensureSandboxBrowser } from "./browser.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
@@ -176,6 +177,9 @@ export async function resolveSandboxContext(params: {
     containerWorkdir: resolvedCfg.docker.workdir,
     docker: resolvedCfg.docker,
     tools: resolvedCfg.tools,
+    fsGrants: normalizeToolFsGrants(
+      resolveToolFsConfig({ cfg: params.config, agentId: resolved.runtime.agentId }).grants,
+    ),
     browserAllowHostControl: resolvedCfg.browser.allowHostControl,
     browser: browser ?? undefined,
   };

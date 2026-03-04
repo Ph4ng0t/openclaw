@@ -25,6 +25,9 @@ describe("subscribeEmbeddedPiSession host exec approvals", () => {
     const harness = createSubscribedSessionHarness({
       runId: "run-host-exec",
       sessionKey: "agent:main:feishu:direct:ou_123",
+      messageChannel: "feishu",
+      agentAccountId: "default",
+      senderId: "ou_123",
     });
 
     harness.emit({
@@ -56,6 +59,9 @@ describe("subscribeEmbeddedPiSession host exec approvals", () => {
     expect(requestHostExecPrivilegeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "agent:main:feishu:direct:ou_123",
+        channel: "feishu",
+        accountId: "default",
+        senderId: "ou_123",
         request: expect.objectContaining({
           command: "ls /home",
           cwd: "/workspace",
