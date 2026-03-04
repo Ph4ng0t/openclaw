@@ -2,6 +2,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
 import { toToolDefinitions } from "./pi-tool-definition-adapter.js";
+import { ToolAccessError } from "./tool-access-error.js";
 
 type ToolExecute = ReturnType<typeof toToolDefinitions>[number]["execute"];
 const extensionContext = {} as Parameters<ToolExecute>[4];
@@ -44,6 +45,42 @@ describe("pi tool definition adapter", () => {
     });
     expect(result.details).toMatchObject({ error: "nope" });
     expect(JSON.stringify(result.details)).not.toContain("\n    at ");
+  });
+
+  it("preserves structured fs access denial details", async () => {
+    const tool = {
+      name: "read",
+      label: "Read",
+      description: "throws structured access error",
+      parameters: Type.Object({}),
+      execute: async () => {
+        throw new ToolAccessError({
+          kind: "fs_access_denied",
+          message: "Path escapes allowed root: /tmp/private.txt",
+          path: "/tmp/private.txt",
+          requestedAccess: "read",
+          suggestedGrant: {
+            path: "/tmp/private.txt",
+            access: "ro",
+            expiresInMs: 1_800_000,
+            reason: "Temporary read access required outside workspace",
+          },
+        });
+      },
+    } satisfies AgentTool;
+
+    const result = await executeTool(tool, "call-structured");
+    expect(result.details).toMatchObject({
+      status: "error",
+      tool: "read",
+      kind: "fs_access_denied",
+      path: "/tmp/private.txt",
+      requestedAccess: "read",
+      suggestedGrant: {
+        path: "/tmp/private.txt",
+        access: "ro",
+      },
+    });
   });
 
   it("normalizes exec tool aliases in error results", async () => {

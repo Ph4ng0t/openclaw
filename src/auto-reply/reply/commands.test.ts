@@ -388,6 +388,53 @@ describe("permission commands", () => {
       }),
     );
   });
+
+  it("creates temporary fs grants when duration is provided", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-04T09:30:45.000Z"));
+    try {
+      const cfg = {
+        commands: { text: true },
+        channels: { whatsapp: { allowFrom: ["*"] } },
+      } as OpenClawConfig;
+      const params = buildParams("/grant path /tmp/project ro 2h", cfg);
+
+      callGatewayMock.mockResolvedValue({ id: "req-2" });
+
+      const result = await handleCommands(params);
+      expect(result.shouldContinue).toBe(false);
+      expect(result.reply?.text).toContain("expires in 2h");
+      expect(callGatewayMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "privileged.request",
+          params: expect.objectContaining({
+            kind: "fs_grant",
+            justification: "Grant ro access to /tmp/project for 2h",
+            payload: {
+              path: "/tmp/project",
+              access: "ro",
+              expiresAt: new Date("2026-03-04T11:30:45.000Z").getTime(),
+            },
+          }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects invalid temporary grant durations", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/grant path /tmp/project ro later", cfg);
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Invalid grant duration");
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("/compact command", () => {

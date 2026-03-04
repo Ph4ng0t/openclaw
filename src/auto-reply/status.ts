@@ -745,6 +745,12 @@ export function buildHelpMessage(cfg?: OpenClawConfig): string {
 
   lines.push("Skills");
   lines.push("  /skill <name> [input]");
+  lines.push("");
+  lines.push("Permissions");
+  lines.push("  /permissions");
+  lines.push(
+    "  /grant path <absPath> [ro|rw] [duration]  (example: /grant path /tmp/project ro 2h)",
+  );
 
   lines.push("");
   lines.push("More: /commands for full list");

@@ -1,6 +1,13 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { MessagingToolSend } from "./pi-embedded-messaging.js";
+
+const requestMinimumFsPrivilegeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./privilege-broker.js", () => ({
+  requestMinimumFsPrivilege: (params: unknown) => requestMinimumFsPrivilegeMock(params),
+}));
+
 import {
   handleToolExecutionEnd,
   handleToolExecutionStart,
@@ -57,6 +64,10 @@ function createTestContext(): {
 }
 
 describe("handleToolExecutionStart read path checks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("does not warn when read tool uses file_path alias", async () => {
     const { ctx, warn, onBlockReplyFlush } = createTestContext();
 
@@ -122,6 +133,10 @@ describe("handleToolExecutionStart read path checks", () => {
 });
 
 describe("handleToolExecutionEnd cron.add commitment tracking", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("increments successfulCronAdds when cron add succeeds", async () => {
     const { ctx } = createTestContext();
     await handleToolExecutionStart(
@@ -176,6 +191,10 @@ describe("handleToolExecutionEnd cron.add commitment tracking", () => {
 });
 
 describe("messaging tool media URL tracking", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("tracks media arg from messaging tool as pending", async () => {
     const { ctx } = createTestContext();
 
@@ -330,5 +349,53 @@ describe("messaging tool media URL tracking", () => {
 
     expect(ctx.state.messagingToolSentMediaUrls).toHaveLength(0);
     expect(ctx.state.pendingMessagingMediaUrls.has("tool-m3")).toBe(false);
+  });
+
+  it("requests minimum fs privilege on structured fs access denial", async () => {
+    const { ctx } = createTestContext();
+    requestMinimumFsPrivilegeMock.mockResolvedValue({
+      status: "requested",
+      requestId: "req-123",
+      expiresAtMs: Date.now() + 1_800_000,
+    });
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "read",
+        toolCallId: "tool-fs-denied",
+        isError: true,
+        result: {
+          details: {
+            status: "error",
+            tool: "read",
+            error: "Path escapes allowed root: /tmp/private.txt",
+            kind: "fs_access_denied",
+            path: "/tmp/private.txt",
+            requestedAccess: "read",
+            suggestedGrant: {
+              path: "/tmp/private.txt",
+              access: "ro",
+              expiresInMs: 1_800_000,
+              reason: "Temporary read access required outside workspace",
+            },
+          },
+        },
+      } as never,
+    );
+
+    expect(requestMinimumFsPrivilegeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: undefined,
+        agentId: undefined,
+        error: expect.objectContaining({
+          kind: "fs_access_denied",
+          path: "/tmp/private.txt",
+        }),
+      }),
+    );
+    expect(ctx.state.lastToolError?.error).toContain("Await owner approval");
+    expect(ctx.state.lastToolError?.error).toContain("req-123");
   });
 });

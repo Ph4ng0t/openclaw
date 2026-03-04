@@ -1,3 +1,4 @@
+import { parseDurationMs } from "../../cli/parse-duration.js";
 import { callGateway } from "../../gateway/call.js";
 import { logVerbose } from "../../globals.js";
 import {
@@ -9,6 +10,53 @@ import type { CommandHandler } from "./commands-types.js";
 
 function shouldSilenceFeishuPrivilegedAck(params: Parameters<CommandHandler>[0]) {
   return params.command.channel === "feishu";
+}
+
+function parseGrantCommand(raw: string): {
+  path: string;
+  access: "ro" | "rw";
+  expiresAt?: number;
+  durationLabel?: string;
+} | null {
+  const match = raw.match(/^\/grant\s+path\s+(\S+)(?:\s+(\S+))?(?:\s+(\S+))?$/i);
+  if (!match) {
+    return null;
+  }
+  const [, grantPath, secondTokenRaw, thirdTokenRaw] = match;
+  const secondToken = secondTokenRaw?.trim().toLowerCase();
+  const thirdToken = thirdTokenRaw?.trim().toLowerCase();
+  let access: "ro" | "rw" = "rw";
+  let durationRaw: string | undefined;
+
+  if (secondToken === "ro" || secondToken === "rw") {
+    access = secondToken;
+    durationRaw = thirdTokenRaw?.trim();
+  } else {
+    durationRaw = secondTokenRaw?.trim();
+  }
+
+  if (thirdTokenRaw && !durationRaw) {
+    return null;
+  }
+  if (
+    thirdTokenRaw &&
+    thirdToken !== undefined &&
+    !(secondToken === "ro" || secondToken === "rw")
+  ) {
+    return null;
+  }
+
+  if (!durationRaw) {
+    return { path: grantPath, access };
+  }
+
+  const durationMs = parseDurationMs(durationRaw, { defaultUnit: "h" });
+  return {
+    path: grantPath,
+    access,
+    expiresAt: Date.now() + durationMs,
+    durationLabel: durationRaw,
+  };
 }
 
 function hasApprovalScope(scopes: readonly string[]): boolean {
@@ -118,20 +166,45 @@ export const handlePermissionsCommands: CommandHandler = async (params, allowTex
     };
   }
 
-  const grantMatch = normalized.match(/^\/grant\s+path\s+(\S+)(?:\s+(ro|rw))?$/i);
-  if (grantMatch) {
-    const [, grantPath, accessRaw] = grantMatch;
-    await submitPrivilegedRequest(params, {
-      kind: "fs_grant",
-      justification: `Grant ${accessRaw ?? "rw"} access to ${grantPath}`,
-      payload: { path: grantPath, access: accessRaw === "ro" ? "ro" : "rw" },
-    });
-    return shouldSilenceFeishuPrivilegedAck(params)
-      ? { shouldContinue: false }
-      : {
-          shouldContinue: false,
-          reply: { text: "✅ Privileged fs_grant request created." },
-        };
+  try {
+    const grantRequest = parseGrantCommand(normalized);
+    if (grantRequest) {
+      const payload: Record<string, unknown> = {
+        path: grantRequest.path,
+        access: grantRequest.access,
+      };
+      if (typeof grantRequest.expiresAt === "number") {
+        payload.expiresAt = grantRequest.expiresAt;
+      }
+      const justification =
+        typeof grantRequest.expiresAt === "number"
+          ? `Grant ${grantRequest.access} access to ${grantRequest.path} for ${grantRequest.durationLabel}`
+          : `Grant ${grantRequest.access} access to ${grantRequest.path}`;
+
+      await submitPrivilegedRequest(params, {
+        kind: "fs_grant",
+        justification,
+        payload,
+      });
+      return shouldSilenceFeishuPrivilegedAck(params)
+        ? { shouldContinue: false }
+        : {
+            shouldContinue: false,
+            reply: {
+              text:
+                typeof grantRequest.expiresAt === "number"
+                  ? `✅ Privileged fs_grant request created (expires in ${grantRequest.durationLabel}).`
+                  : "✅ Privileged fs_grant request created.",
+            },
+          };
+    }
+  } catch (error) {
+    return {
+      shouldContinue: false,
+      reply: {
+        text: `❌ Invalid grant duration: ${String(error instanceof Error ? error.message : error)}`,
+      },
+    };
   }
 
   const revokeMatch = normalized.match(/^\/revoke\s+path\s+(\S+)$/i);
@@ -167,7 +240,7 @@ export const handlePermissionsCommands: CommandHandler = async (params, allowTex
   return {
     shouldContinue: false,
     reply: {
-      text: "Usage: /permissions | /privileged pending | /grant path <absPath> [ro|rw] | /revoke path <absPath> | /dangerous shutdown",
+      text: "Usage: /permissions | /privileged pending | /grant path <absPath> [ro|rw] [duration] | /revoke path <absPath> | /dangerous shutdown",
     },
   };
 };

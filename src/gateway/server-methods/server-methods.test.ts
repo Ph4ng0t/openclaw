@@ -9,6 +9,7 @@ import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.js
 import { buildSystemRunApprovalBinding } from "../../infra/system-run-approval-binding.js";
 import { resetLogger, setLoggerOverride } from "../../logging.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
+import { PrivilegedRequestManager } from "../privileged-request-manager.js";
 import { validateExecApprovalRequestParams } from "../protocol/index.js";
 import { waitForAgentJob } from "./agent-job.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
@@ -16,6 +17,7 @@ import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize
 import { sanitizeChatSendMessageInput } from "./chat.js";
 import { createExecApprovalHandlers } from "./exec-approval.js";
 import { logsHandlers } from "./logs.js";
+import { createPrivilegedHandlers } from "./privileged.js";
 
 vi.mock("../../commands/status.js", () => ({
   getStatusSummary: vi.fn().mockResolvedValue({ ok: true }),
@@ -692,6 +694,53 @@ describe("exec approval handlers", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("privileged handlers", () => {
+  type PrivilegedHandlers = ReturnType<typeof createPrivilegedHandlers>;
+  type PrivilegedRequestArgs = Parameters<PrivilegedHandlers["privileged.request"]>[0];
+
+  function createPrivilegedFixture() {
+    const manager = new PrivilegedRequestManager();
+    const handlers = createPrivilegedHandlers(manager);
+    const broadcasts: Array<{ event: string; payload: unknown }> = [];
+    const respond = vi.fn();
+    const context = {
+      broadcast: (event: string, payload: unknown) => {
+        broadcasts.push({ event, payload });
+      },
+    };
+    return { manager, handlers, broadcasts, respond, context };
+  }
+
+  it("accepts privileged requests immediately before any decision", async () => {
+    const { manager, handlers, broadcasts, respond, context } = createPrivilegedFixture();
+
+    const requestPromise = handlers["privileged.request"]({
+      params: {
+        kind: "fs_grant",
+        justification: "Grant ro access to /tmp/demo",
+        payload: { path: "/tmp/demo", access: "ro" },
+      } as PrivilegedRequestArgs["params"],
+      respond: respond as unknown as PrivilegedRequestArgs["respond"],
+      context: context as unknown as PrivilegedRequestArgs["context"],
+      client: null,
+      req: { id: "req-1", type: "req", method: "privileged.request" },
+      isWebchatConnect: () => false,
+    });
+
+    await Promise.resolve();
+
+    expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ status: "accepted" }));
+
+    const requested = broadcasts.find((entry) => entry.event === "privileged.requested");
+    expect(requested).toBeTruthy();
+    const id = (requested?.payload as { id?: string } | undefined)?.id ?? "";
+    expect(id).not.toBe("");
+    expect(manager.getSnapshot(id)?.status).toBe("pending");
+
+    await requestPromise;
   });
 });
 

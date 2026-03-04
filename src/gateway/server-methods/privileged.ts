@@ -44,7 +44,8 @@ export function createPrivilegedHandlers(
             ? (p.requestedBy as Record<string, string>)
             : undefined,
       });
-      await manager.register(record);
+      // Registration is synchronous; the returned promise resolves when a decision arrives.
+      void manager.register(record);
       context.broadcast(
         "privileged.requested",
         {

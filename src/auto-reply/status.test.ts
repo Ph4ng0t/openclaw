@@ -671,6 +671,8 @@ describe("buildHelpMessage", () => {
     } as unknown as OpenClawConfig);
     expect(text).toContain("Skills");
     expect(text).toContain("/skill <name> [input]");
+    expect(text).toContain("Permissions");
+    expect(text).toContain("/grant path <absPath> [ro|rw] [duration]");
     expect(text).not.toContain("/config");
     expect(text).not.toContain("/debug");
   });

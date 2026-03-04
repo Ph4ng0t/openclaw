@@ -24,8 +24,10 @@ import {
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import { ToolAccessError } from "./tool-access-error.js";
 import type { ToolFsPolicy } from "./tool-fs-policy.js";
 import { getToolFsAllowedRoot, isToolFsPathAllowed } from "./tool-fs-policy.js";
+import { suggestFsGrant } from "./tool-fs-privilege.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 export {
@@ -760,7 +762,17 @@ function assertToolFsAccess(
     return;
   }
   const label = access === "write" ? "writable root" : "allowed root";
-  throw new Error(`Path escapes ${label}: ${filePath}`);
+  const suggestedGrant = suggestFsGrant({ filePath, access, policy });
+  throw new ToolAccessError({
+    kind: "fs_access_denied",
+    message: `Path escapes ${label}: ${filePath}`,
+    path: filePath,
+    requestedAccess: access,
+    allowedRoots: policy.roots?.filter(
+      (root) => root.source === "workspace" || root.source === "grant",
+    ),
+    suggestedGrant,
+  });
 }
 
 function requireToolFsRoot(policy: ToolFsPolicy, filePath: string, access: "read" | "write") {

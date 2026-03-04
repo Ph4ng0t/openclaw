@@ -12,6 +12,7 @@ import {
   isToolWrappedWithBeforeToolCallHook,
   runBeforeToolCallHook,
 } from "./pi-tools.before-tool-call.js";
+import { isToolAccessError } from "./tool-access-error.js";
 import { normalizeToolName } from "./tool-policy.js";
 import { jsonResult } from "./tools/common.js";
 
@@ -181,6 +182,19 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
             logDebug(`tools: ${normalizedName} failed stack:\n${described.stack}`);
           }
           logError(`[tools] ${normalizedName} failed: ${described.message}`);
+
+          if (isToolAccessError(err)) {
+            return jsonResult({
+              status: "error",
+              tool: normalizedName,
+              error: described.message,
+              kind: err.kind,
+              path: err.path,
+              requestedAccess: err.requestedAccess,
+              allowedRoots: err.allowedRoots,
+              suggestedGrant: err.suggestedGrant,
+            });
+          }
 
           return jsonResult({
             status: "error",

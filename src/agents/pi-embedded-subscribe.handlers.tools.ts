@@ -19,6 +19,7 @@ import {
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { consumeAdjustedParamsForToolCall } from "./pi-tools.before-tool-call.js";
+import { requestMinimumFsPrivilege, type FsAccessDeniedPayload } from "./privilege-broker.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
@@ -137,6 +138,31 @@ function collectMessagingMediaUrlsFromToolResult(result: unknown): string[] {
   }
 
   return urls;
+}
+
+function readFsPrivilegeRequestDetails(result: unknown):
+  | {
+      path: string;
+      requestedAccess: "read" | "write";
+    }
+  | undefined {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+  const details = (result as { details?: unknown }).details;
+  if (!details || typeof details !== "object") {
+    return undefined;
+  }
+  const record = details as Record<string, unknown>;
+  if (record.kind !== "fs_access_denied") {
+    return undefined;
+  }
+  const deniedPath = typeof record.path === "string" ? record.path.trim() : "";
+  const requestedAccess = record.requestedAccess === "write" ? "write" : "read";
+  if (!deniedPath) {
+    return undefined;
+  }
+  return { path: deniedPath, requestedAccess };
 }
 
 function emitToolResultOutput(params: {
@@ -334,6 +360,33 @@ export async function handleToolExecutionEnd(
       mutatingAction: callSummary?.mutatingAction,
       actionFingerprint: callSummary?.actionFingerprint,
     };
+    const denied = readFsPrivilegeRequestDetails(result);
+    if (denied) {
+      try {
+        const privilegeResult = await requestMinimumFsPrivilege({
+          cfg: ctx.params.config,
+          error: (result as { details?: unknown }).details as FsAccessDeniedPayload,
+          sessionKey: ctx.params.sessionKey,
+          agentId: ctx.params.agentId,
+        });
+        if (privilegeResult.status === "requested" || privilegeResult.status === "duplicate") {
+          const actionLabel = denied.requestedAccess === "write" ? "write access" : "read access";
+          const requestState =
+            privilegeResult.status === "requested" ? "created" : "already pending";
+          ctx.state.lastToolError = {
+            toolName,
+            meta,
+            error: `Privilege request ${requestState} for ${actionLabel} to ${denied.path}. Await owner approval (request ${privilegeResult.requestId}).`,
+            mutatingAction: callSummary?.mutatingAction,
+            actionFingerprint: callSummary?.actionFingerprint,
+          };
+        }
+      } catch (brokerError) {
+        ctx.log.warn(
+          `failed to create privilege request for ${denied.path}: ${String(brokerError)}`,
+        );
+      }
+    }
   } else if (ctx.state.lastToolError) {
     // Keep unresolved mutating failures until the same action succeeds.
     if (ctx.state.lastToolError.mutatingAction) {
