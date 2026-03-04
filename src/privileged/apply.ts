@@ -59,12 +59,19 @@ export async function applyPrivilegedRequest(record: PrivilegedRequestRecord): P
     };
     const command = typeof payload.command === "string" ? payload.command.trim() : "";
     if (command) {
-      return await runHostCommand({
+      const result = await runHostCommand({
         command,
         cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
         host: payload.host,
         nodeId: payload.nodeId,
       });
+      queueHostExecResult({
+        record,
+        command,
+        cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
+        result,
+      });
+      return result;
     }
     const commandId = typeof payload.commandId === "string" ? payload.commandId : "";
     return await runRegisteredCommand({
@@ -76,6 +83,30 @@ export async function applyPrivilegedRequest(record: PrivilegedRequestRecord): P
     });
   }
   return assertNeverPrivilegedKind(record.kind);
+}
+
+function queueHostExecResult(params: {
+  record: PrivilegedRequestRecord;
+  command: string;
+  cwd?: string;
+  result: string;
+}): void {
+  const sessionKey = params.record.requestedBy?.sessionKey?.trim();
+  if (!sessionKey) {
+    return;
+  }
+  const lines = [
+    "Exec finished (gateway privileged, code 0)",
+    `Command: ${params.command}`,
+    params.cwd ? `Cwd: ${params.cwd}` : "",
+    params.result,
+  ].filter(Boolean);
+  enqueueSystemEvent(lines.join("\n"), { sessionKey });
+  requestHeartbeatNow({
+    reason: "exec-event",
+    sessionKey,
+    agentId: params.record.requestedBy?.agentId ?? undefined,
+  });
 }
 
 async function applyFsGrant(record: PrivilegedRequestRecord): Promise<string> {

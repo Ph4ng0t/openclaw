@@ -121,6 +121,10 @@ describe("applyPrivilegedRequest", () => {
         justification: "Allow host exec",
         createdAtMs: 1,
         expiresAtMs: 2,
+        requestedBy: {
+          sessionKey: "agent:main:feishu:direct:ou_1",
+          agentId: "main",
+        },
         payload: {
           command: "touch /home/lawliet/ai/foo",
           cwd: "/home/lawliet",
@@ -129,6 +133,10 @@ describe("applyPrivilegedRequest", () => {
         singleUse: true,
       }),
     ).resolves.toBe("Host command completed.");
+    expect(peekSystemEvents("agent:main:feishu:direct:ou_1")).toEqual([
+      "Exec finished (gateway privileged, code 0)\nCommand: touch /home/lawliet/ai/foo\nCwd: /home/lawliet\nHost command completed.",
+    ]);
+    expect(hasPendingHeartbeatWake()).toBe(true);
   });
 
   it("rejects raw node host_exec commands", async () => {
