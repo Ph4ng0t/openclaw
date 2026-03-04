@@ -683,6 +683,10 @@ describe("buildAgentSystemPrompt", () => {
 
     expect(prompt).toContain("use `request_privilege` to ask for approval");
     expect(prompt).toContain("Use `kind=host_exec` for host commands");
+    expect(prompt).toContain(
+      "If the user explicitly asks you to request access, permission, approval, a sandbox exception, or a filesystem grant, call `request_privilege` immediately",
+    );
+    expect(prompt).toContain("For filesystem grants, pass the original host path plus `access=ro`");
   });
 });
 

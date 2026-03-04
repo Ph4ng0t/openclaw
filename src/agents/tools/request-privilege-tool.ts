@@ -32,7 +32,7 @@ export function createRequestPrivilegeTool(opts?: {
     label: "Request Privilege",
     name: "request_privilege",
     description:
-      "Create a privileged action proposal for owner approval. This tool never executes the action itself.",
+      "Create a privileged action proposal for owner approval. Use `kind=fs_grant` with `path` + `access=ro|rw` for filesystem access, or `kind=host_exec` for host commands. This tool never executes the action itself.",
     parameters: RequestPrivilegeSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
