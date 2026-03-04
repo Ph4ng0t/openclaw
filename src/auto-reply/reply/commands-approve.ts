@@ -9,8 +9,9 @@ import type { CommandHandler } from "./commands-types.js";
 
 const COMMAND = "/approve";
 
-const DECISION_ALIASES: Record<string, "allow-once" | "allow-always" | "deny"> = {
+const DECISION_ALIASES: Record<string, "allow-once" | "allow-always" | "deny" | "approve"> = {
   allow: "allow-once",
+  approve: "approve",
   once: "allow-once",
   "allow-once": "allow-once",
   allowonce: "allow-once",
@@ -23,7 +24,7 @@ const DECISION_ALIASES: Record<string, "allow-once" | "allow-always" | "deny"> =
 };
 
 type ParsedApproveCommand =
-  | { ok: true; id: string; decision: "allow-once" | "allow-always" | "deny" }
+  | { ok: true; id: string; decision: "allow-once" | "allow-always" | "deny" | "approve" }
   | { ok: false; error: string };
 
 function parseApproveCommand(raw: string): ParsedApproveCommand | null {
@@ -33,11 +34,11 @@ function parseApproveCommand(raw: string): ParsedApproveCommand | null {
   }
   const rest = trimmed.slice(COMMAND.length).trim();
   if (!rest) {
-    return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|deny" };
+    return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|approve|deny" };
   }
   const tokens = rest.split(/\s+/).filter(Boolean);
   if (tokens.length < 2) {
-    return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|deny" };
+    return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|approve|deny" };
   }
 
   const first = tokens[0].toLowerCase();
@@ -57,13 +58,17 @@ function parseApproveCommand(raw: string): ParsedApproveCommand | null {
       id: tokens[0],
     };
   }
-  return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|deny" };
+  return { ok: false, error: "Usage: /approve <id> allow-once|allow-always|approve|deny" };
 }
 
 function buildResolvedByLabel(params: Parameters<CommandHandler>[0]): string {
   const channel = params.command.channel;
   const sender = params.command.senderId ?? "unknown";
   return `${channel}:${sender}`;
+}
+
+function shouldSilenceFeishuPrivilegedAck(params: Parameters<CommandHandler>[0]): boolean {
+  return params.command.channel === "feishu";
 }
 
 export const handleApproveCommand: CommandHandler = async (params, allowTextCommands) => {
@@ -102,6 +107,42 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
 
   const resolvedBy = buildResolvedByLabel(params);
   try {
+    if (parsed.decision === "approve" || parsed.decision === "deny") {
+      try {
+        await callGateway({
+          method: "privileged.resolve",
+          params: { id: parsed.id, decision: parsed.decision, resolvedBy },
+          clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+          clientDisplayName: `Chat approval (${resolvedBy})`,
+          mode: GATEWAY_CLIENT_MODES.BACKEND,
+        });
+        return shouldSilenceFeishuPrivilegedAck(params)
+          ? { shouldContinue: false }
+          : {
+              shouldContinue: false,
+              reply: {
+                text: `✅ Privileged request ${parsed.decision} submitted for ${parsed.id}.`,
+              },
+            };
+      } catch {
+        await callGateway({
+          method: "exec.approval.resolve",
+          params: {
+            id: parsed.id,
+            decision: parsed.decision === "approve" ? "allow-once" : "deny",
+          },
+          clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+          clientDisplayName: `Chat approval (${resolvedBy})`,
+          mode: GATEWAY_CLIENT_MODES.BACKEND,
+        });
+        return {
+          shouldContinue: false,
+          reply: {
+            text: `✅ Exec approval ${parsed.decision === "approve" ? "allow-once" : "deny"} submitted for ${parsed.id}.`,
+          },
+        };
+      }
+    }
     await callGateway({
       method: "exec.approval.resolve",
       params: { id: parsed.id, decision: parsed.decision },

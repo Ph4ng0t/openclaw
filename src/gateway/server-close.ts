@@ -1,4 +1,5 @@
 import type { Server as HttpServer } from "node:http";
+import type net from "node:net";
 import type { WebSocketServer } from "ws";
 import type { CanvasHostHandler, CanvasHostServer } from "../canvas-host/server.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
@@ -27,6 +28,8 @@ export function createGatewayCloseHandler(params: {
   clients: Set<{ socket: { close: (code: number, reason: string) => void } }>;
   configReloader: { stop: () => Promise<void> };
   browserControl: { stop: () => Promise<void> } | null;
+  privilegedGateServer?: net.Server | null;
+  privilegedGateStop?: (() => Promise<void>) | null;
   wss: WebSocketServer;
   httpServer: HttpServer;
   httpServers?: HttpServer[];
@@ -67,6 +70,11 @@ export function createGatewayCloseHandler(params: {
     }
     if (params.pluginServices) {
       await params.pluginServices.stop().catch(() => {});
+    }
+    if (params.privilegedGateStop) {
+      await params.privilegedGateStop().catch(() => {});
+    } else if (params.privilegedGateServer) {
+      await new Promise<void>((resolve) => params.privilegedGateServer?.close(() => resolve()));
     }
     await stopGmailWatcher();
     params.cron.stop();

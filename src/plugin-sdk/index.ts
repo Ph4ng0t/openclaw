@@ -109,6 +109,12 @@ export type {
   GatewayRequestHandlerOptions,
   RespondFn,
 } from "../gateway/server-methods/types.js";
+export { buildGatewayConnectionDetails } from "../gateway/call.js";
+export { resolveGatewayCredentialsFromConfig } from "../gateway/credentials.js";
+export type { EventFrame } from "../gateway/protocol/index.js";
+export { GatewayClient } from "../gateway/client.js";
+export { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
+export type { GatewayClientMode, GatewayClientName } from "../utils/message-channel.js";
 export type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 export { normalizePluginHttpPath } from "../plugins/http-path.js";
 export { registerPluginHttpRoute } from "../plugins/http-registry.js";

@@ -38,10 +38,13 @@ export function applyImageModelConfigDefaults(
 
 export function resolveMediaToolLocalRoots(
   workspaceDirRaw: string | undefined,
-  options?: { workspaceOnly?: boolean },
+  options?: { workspaceOnly?: boolean; allowedRoots?: string[] },
 ): string[] {
   const workspaceDir = normalizeWorkspaceDir(workspaceDirRaw);
   if (options?.workspaceOnly) {
+    if (options.allowedRoots?.length) {
+      return Array.from(new Set(options.allowedRoots));
+    }
     return workspaceDir ? [workspaceDir] : [];
   }
   const roots = getDefaultLocalRoots();

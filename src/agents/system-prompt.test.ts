@@ -628,6 +628,13 @@ describe("buildAgentSystemPrompt", () => {
         enabled: true,
         workspaceDir: "/tmp/sandbox",
         containerWorkspaceDir: "/workspace",
+        fsGrants: [
+          {
+            hostPath: "/home/lawliet/projects",
+            containerPath: "/grants/projects-ro",
+            access: "ro",
+          },
+        ],
         workspaceAccess: "ro",
         agentWorkspaceMount: "/agent",
         elevated: { allowed: true, defaultLevel: "on" },
@@ -641,6 +648,10 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Sandbox container workdir: /workspace");
     expect(prompt).toContain(
       "Sandbox host mount source (file tools bridge only; not valid inside sandbox exec): /tmp/sandbox",
+    );
+    expect(prompt).toContain("Granted path: /home/lawliet/projects -> /grants/projects-ro (ro)");
+    expect(prompt).toContain(
+      "For sandbox bash/exec inside granted directories, use the /grants/... container path or set workdir there.",
     );
     expect(prompt).toContain("You are running in a sandboxed runtime");
     expect(prompt).toContain("Sub-agents stay sandboxed");

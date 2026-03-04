@@ -42,12 +42,24 @@ describe("buildEmbeddedSandboxInfo", () => {
   });
 
   it("maps sandbox context into prompt info", () => {
-    const sandbox = createSandboxContext();
+    const sandbox = createSandboxContext({
+      docker: {
+        ...createSandboxContext().docker,
+        binds: ["/home/lawliet/projects:/grants/projects-ro:ro"],
+      },
+    });
 
     expect(buildEmbeddedSandboxInfo(sandbox)).toEqual({
       enabled: true,
       workspaceDir: "/tmp/openclaw-sandbox",
       containerWorkspaceDir: "/workspace",
+      fsGrants: [
+        {
+          hostPath: "/home/lawliet/projects",
+          containerPath: "/grants/projects-ro",
+          access: "ro",
+        },
+      ],
       workspaceAccess: "none",
       agentWorkspaceMount: undefined,
       browserBridgeUrl: "http://localhost:9222",

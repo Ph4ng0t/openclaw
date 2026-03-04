@@ -74,4 +74,44 @@ describe("resolveSandboxWorkdir", () => {
       expect(warnings).toEqual([]);
     });
   });
+
+  it("maps granted container workdirs outside the workspace root", async () => {
+    await withTempDir(async (workspaceDir) => {
+      const grantRoot = await mkdtemp(path.join(os.tmpdir(), "openclaw-bash-grant-"));
+      try {
+        const grantedDir = path.join(grantRoot, "repo");
+        await mkdir(grantedDir, { recursive: true });
+        const warnings: string[] = [];
+        const resolved = await resolveSandboxWorkdir({
+          workdir: "/grants/projects-ro/repo",
+          sandbox: {
+            containerName: "sandbox-4",
+            workspaceDir,
+            containerWorkdir: "/workspace",
+            mounts: [
+              {
+                hostRoot: workspaceDir,
+                containerRoot: "/workspace",
+                writable: true,
+                source: "workspace",
+              },
+              {
+                hostRoot: grantRoot,
+                containerRoot: "/grants/projects-ro",
+                writable: false,
+                source: "bind",
+              },
+            ],
+          },
+          warnings,
+        });
+
+        expect(resolved.hostWorkdir).toBe(grantedDir);
+        expect(resolved.containerWorkdir).toBe("/grants/projects-ro/repo");
+        expect(warnings).toEqual([]);
+      } finally {
+        await rm(grantRoot, { recursive: true, force: true });
+      }
+    });
+  });
 });

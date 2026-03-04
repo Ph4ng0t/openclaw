@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { sliceUtf16Safe } from "../utils.js";
-import { assertSandboxPath } from "./sandbox-paths.js";
+import { resolveSandboxFsPathWithMounts, type SandboxFsMount } from "./sandbox/fs-paths.js";
 
 const CHUNK_LIMIT = 8 * 1024;
 
@@ -11,6 +11,7 @@ export type BashSandboxConfig = {
   containerName: string;
   workspaceDir: string;
   containerWorkdir: string;
+  mounts?: SandboxFsMount[];
   env?: Record<string, string>;
 };
 
@@ -92,28 +93,29 @@ export async function resolveSandboxWorkdir(params: {
   warnings: string[];
 }) {
   const fallback = params.sandbox.workspaceDir;
-  const mappedHostWorkdir = mapContainerWorkdirToHost({
-    workdir: params.workdir,
-    sandbox: params.sandbox,
-  });
-  const candidateWorkdir = mappedHostWorkdir ?? params.workdir;
   try {
-    const resolved = await assertSandboxPath({
-      filePath: candidateWorkdir,
+    const resolved = resolveSandboxFsPathWithMounts({
+      filePath: params.workdir,
       cwd: process.cwd(),
-      root: params.sandbox.workspaceDir,
+      defaultWorkspaceRoot: params.sandbox.workspaceDir,
+      defaultContainerRoot: params.sandbox.containerWorkdir,
+      mounts: params.sandbox.mounts ?? [
+        {
+          hostRoot: path.resolve(params.sandbox.workspaceDir),
+          containerRoot: normalizeContainerPath(params.sandbox.containerWorkdir),
+          writable: true,
+          source: "workspace",
+        },
+      ],
     });
-    const stats = await fs.stat(resolved.resolved);
+    const stats = await fs.stat(resolved.hostPath);
     if (!stats.isDirectory()) {
       throw new Error("workdir is not a directory");
     }
-    const relative = resolved.relative
-      ? resolved.relative.split(path.sep).join(path.posix.sep)
-      : "";
-    const containerWorkdir = relative
-      ? path.posix.join(params.sandbox.containerWorkdir, relative)
-      : params.sandbox.containerWorkdir;
-    return { hostWorkdir: resolved.resolved, containerWorkdir };
+    return {
+      hostWorkdir: resolved.hostPath,
+      containerWorkdir: resolved.containerPath,
+    };
   } catch {
     params.warnings.push(
       `Warning: workdir "${params.workdir}" is unavailable; using "${fallback}".`,
@@ -123,28 +125,6 @@ export async function resolveSandboxWorkdir(params: {
       containerWorkdir: params.sandbox.containerWorkdir,
     };
   }
-}
-
-function mapContainerWorkdirToHost(params: {
-  workdir: string;
-  sandbox: BashSandboxConfig;
-}): string | undefined {
-  const workdir = normalizeContainerPath(params.workdir);
-  const containerRoot = normalizeContainerPath(params.sandbox.containerWorkdir);
-  if (containerRoot === ".") {
-    return undefined;
-  }
-  if (workdir === containerRoot) {
-    return path.resolve(params.sandbox.workspaceDir);
-  }
-  if (!workdir.startsWith(`${containerRoot}/`)) {
-    return undefined;
-  }
-  const rel = workdir
-    .slice(containerRoot.length + 1)
-    .split("/")
-    .filter(Boolean);
-  return path.resolve(params.sandbox.workspaceDir, ...rel);
 }
 
 function normalizeContainerPath(input: string): string {

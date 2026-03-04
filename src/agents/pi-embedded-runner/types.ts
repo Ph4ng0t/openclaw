@@ -93,6 +93,11 @@ export type EmbeddedSandboxInfo = {
   enabled: boolean;
   workspaceDir?: string;
   containerWorkspaceDir?: string;
+  fsGrants?: Array<{
+    hostPath: string;
+    containerPath: string;
+    access: "ro" | "rw";
+  }>;
   workspaceAccess?: "none" | "ro" | "rw";
   agentWorkspaceMount?: string;
   browserBridgeUrl?: string;

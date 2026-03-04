@@ -10,6 +10,8 @@ import { applyUpdateHunk } from "./apply-patch-update.js";
 import { toRelativeSandboxPath, resolvePathFromInput } from "./path-policy.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import type { ToolFsPolicy } from "./tool-fs-policy.js";
+import { getToolFsAllowedRoot, isToolFsPathAllowed } from "./tool-fs-policy.js";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -73,6 +75,7 @@ type ApplyPatchOptions = {
   sandbox?: SandboxApplyPatchConfig;
   /** Restrict patch paths to the workspace root (cwd). Default: true. Set false to opt out. */
   workspaceOnly?: boolean;
+  fsPolicy?: ToolFsPolicy;
   signal?: AbortSignal;
 };
 
@@ -83,7 +86,12 @@ const applyPatchSchema = Type.Object({
 });
 
 export function createApplyPatchTool(
-  options: { cwd?: string; sandbox?: SandboxApplyPatchConfig; workspaceOnly?: boolean } = {},
+  options: {
+    cwd?: string;
+    sandbox?: SandboxApplyPatchConfig;
+    workspaceOnly?: boolean;
+    fsPolicy?: ToolFsPolicy;
+  } = {},
 ): AgentTool<typeof applyPatchSchema, ApplyPatchToolDetails> {
   const cwd = options.cwd ?? process.cwd();
   const sandbox = options.sandbox;
@@ -111,6 +119,7 @@ export function createApplyPatchTool(
         cwd,
         sandbox,
         workspaceOnly,
+        fsPolicy: options.fsPolicy,
         signal,
       });
 
@@ -245,6 +254,20 @@ function resolvePatchFileOps(options: ApplyPatchOptions): PatchFileOps {
       if (!workspaceOnly) {
         return await fs.readFile(filePath, "utf8");
       }
+      if (options.fsPolicy) {
+        const root = requireFsPolicyRoot(options.fsPolicy, filePath, "read");
+        const opened = await openBoundaryFile({
+          absolutePath: filePath,
+          rootPath: root.path,
+          boundaryLabel: "allowed root",
+        });
+        assertBoundaryRead(opened, filePath);
+        try {
+          return syncFs.readFileSync(opened.fd, "utf8");
+        } finally {
+          syncFs.closeSync(opened.fd);
+        }
+      }
       const opened = await openBoundaryFile({
         absolutePath: filePath,
         rootPath: options.cwd,
@@ -260,6 +283,16 @@ function resolvePatchFileOps(options: ApplyPatchOptions): PatchFileOps {
     writeFile: async (filePath, content) => {
       if (!workspaceOnly) {
         await fs.writeFile(filePath, content, "utf8");
+        return;
+      }
+      if (options.fsPolicy) {
+        const root = requireFsPolicyRoot(options.fsPolicy, filePath, "write");
+        await writeFileWithinRoot({
+          rootDir: root.path,
+          relativePath: path.relative(root.path, filePath),
+          data: content,
+          encoding: "utf8",
+        });
         return;
       }
       const relative = toRelativeSandboxPath(options.cwd, filePath);
@@ -294,13 +327,17 @@ async function resolvePatchPath(
       cwd: options.cwd,
     });
     if (options.workspaceOnly !== false) {
-      await assertSandboxPath({
-        filePath: resolved.hostPath,
-        cwd: options.cwd,
-        root: options.cwd,
-        allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
-        allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
-      });
+      if (options.fsPolicy) {
+        requireFsPolicyRoot(options.fsPolicy, resolved.hostPath, hunkAccess(aliasPolicy));
+      } else {
+        await assertSandboxPath({
+          filePath: resolved.hostPath,
+          cwd: options.cwd,
+          root: options.cwd,
+          allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
+          allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
+        });
+      }
     }
     return {
       resolved: resolved.hostPath,
@@ -309,21 +346,43 @@ async function resolvePatchPath(
   }
 
   const workspaceOnly = options.workspaceOnly !== false;
-  const resolved = workspaceOnly
-    ? (
-        await assertSandboxPath({
-          filePath,
-          cwd: options.cwd,
-          root: options.cwd,
-          allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
-          allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
-        })
-      ).resolved
-    : resolvePathFromInput(filePath, options.cwd);
+  const resolved = !workspaceOnly
+    ? resolvePathFromInput(filePath, options.cwd)
+    : options.fsPolicy
+      ? requireFsPolicyRoot(
+          options.fsPolicy,
+          resolvePathFromInput(filePath, options.cwd),
+          hunkAccess(aliasPolicy),
+        ).path
+      : (
+          await assertSandboxPath({
+            filePath,
+            cwd: options.cwd,
+            root: options.cwd,
+            allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
+            allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
+          })
+        ).resolved;
+  const finalResolved =
+    workspaceOnly && options.fsPolicy ? resolvePathFromInput(filePath, options.cwd) : resolved;
   return {
-    resolved,
-    display: toDisplayPath(resolved, options.cwd),
+    resolved: finalResolved,
+    display: toDisplayPath(finalResolved, options.cwd),
   };
+}
+
+function hunkAccess(aliasPolicy: PathAliasPolicy): "read" | "write" {
+  return aliasPolicy.allowFinalSymlinkForUnlink || aliasPolicy.allowFinalHardlinkForUnlink
+    ? "write"
+    : "write";
+}
+
+function requireFsPolicyRoot(policy: ToolFsPolicy, filePath: string, access: "read" | "write") {
+  if (!isToolFsPathAllowed(policy, filePath, access)) {
+    const label = access === "write" ? "writable root" : "allowed root";
+    throw new Error(`Path escapes ${label}: ${filePath}`);
+  }
+  return getToolFsAllowedRoot(policy, filePath, access)!;
 }
 
 function assertBoundaryRead(

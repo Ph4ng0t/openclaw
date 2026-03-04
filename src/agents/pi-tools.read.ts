@@ -24,6 +24,8 @@ import {
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import type { ToolFsPolicy } from "./tool-fs-policy.js";
+import { getToolFsAllowedRoot, isToolFsPathAllowed } from "./tool-fs-policy.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 export {
@@ -350,8 +352,12 @@ async function normalizeReadImageResult(
   return { ...result, content: nextContent };
 }
 
-export function wrapToolWorkspaceRootGuard(tool: AnyAgentTool, root: string): AnyAgentTool {
-  return wrapToolWorkspaceRootGuardWithOptions(tool, root);
+export function wrapToolWorkspaceRootGuard(
+  tool: AnyAgentTool,
+  root: string,
+  fsPolicy?: ToolFsPolicy,
+): AnyAgentTool {
+  return wrapToolWorkspaceRootGuardWithOptions(tool, root, { fsPolicy });
 }
 
 function mapContainerPathToWorkspaceRoot(params: {
@@ -411,6 +417,7 @@ export function wrapToolWorkspaceRootGuardWithOptions(
   root: string,
   options?: {
     containerWorkdir?: string;
+    fsPolicy?: ToolFsPolicy;
   },
 ): AnyAgentTool {
   return {
@@ -427,7 +434,11 @@ export function wrapToolWorkspaceRootGuardWithOptions(
           root,
           containerWorkdir: options?.containerWorkdir,
         });
-        await assertSandboxPath({ filePath: sandboxPath, cwd: root, root });
+        if (options?.fsPolicy?.workspaceOnly) {
+          assertToolFsAccess(options.fsPolicy, sandboxPath, "read");
+        } else {
+          await assertSandboxPath({ filePath: sandboxPath, cwd: root, root });
+        }
       }
       return tool.execute(toolCallId, normalized ?? args, signal, onUpdate);
     },
@@ -465,14 +476,20 @@ export function createSandboxedEditTool(params: SandboxToolParams) {
   return wrapToolParamNormalization(base, CLAUDE_PARAM_GROUPS.edit);
 }
 
-export function createHostWorkspaceWriteTool(root: string, options?: { workspaceOnly?: boolean }) {
+export function createHostWorkspaceWriteTool(
+  root: string,
+  options?: { workspaceOnly?: boolean; fsPolicy?: ToolFsPolicy },
+) {
   const base = createWriteTool(root, {
     operations: createHostWriteOperations(root, options),
   }) as unknown as AnyAgentTool;
   return wrapToolParamNormalization(base, CLAUDE_PARAM_GROUPS.write);
 }
 
-export function createHostWorkspaceEditTool(root: string, options?: { workspaceOnly?: boolean }) {
+export function createHostWorkspaceEditTool(
+  root: string,
+  options?: { workspaceOnly?: boolean; fsPolicy?: ToolFsPolicy },
+) {
   const base = createEditTool(root, {
     operations: createHostEditOperations(root, options),
   }) as unknown as AnyAgentTool;
@@ -562,7 +579,10 @@ async function writeHostFile(absolutePath: string, content: string) {
   await fs.writeFile(resolved, content, "utf-8");
 }
 
-function createHostWriteOperations(root: string, options?: { workspaceOnly?: boolean }) {
+function createHostWriteOperations(
+  root: string,
+  options?: { workspaceOnly?: boolean; fsPolicy?: ToolFsPolicy },
+) {
   const workspaceOnly = options?.workspaceOnly ?? false;
 
   if (!workspaceOnly) {
@@ -579,12 +599,32 @@ function createHostWriteOperations(root: string, options?: { workspaceOnly?: boo
   // When workspaceOnly is true, enforce workspace boundary
   return {
     mkdir: async (dir: string) => {
-      const relative = toRelativeWorkspacePath(root, dir, { allowRoot: true });
-      const resolved = relative ? path.resolve(root, relative) : path.resolve(root);
-      await assertSandboxPath({ filePath: resolved, cwd: root, root });
+      const resolved = path.resolve(dir);
+      if (options?.fsPolicy) {
+        assertToolFsAccess(options.fsPolicy, resolved, "write");
+      } else {
+        const relative = toRelativeWorkspacePath(root, dir, { allowRoot: true });
+        await assertSandboxPath({
+          filePath: relative ? path.resolve(root, relative) : path.resolve(root),
+          cwd: root,
+          root,
+        });
+      }
       await fs.mkdir(resolved, { recursive: true });
     },
     writeFile: async (absolutePath: string, content: string) => {
+      const resolved = path.resolve(absolutePath);
+      if (options?.fsPolicy) {
+        const allowedRoot = requireToolFsRoot(options.fsPolicy, resolved, "write");
+        const relative = path.relative(allowedRoot.path, resolved);
+        await writeFileWithinRoot({
+          rootDir: allowedRoot.path,
+          relativePath: relative,
+          data: content,
+          mkdir: true,
+        });
+        return;
+      }
       const relative = toRelativeWorkspacePath(root, absolutePath);
       await writeFileWithinRoot({
         rootDir: root,
@@ -596,7 +636,10 @@ function createHostWriteOperations(root: string, options?: { workspaceOnly?: boo
   } as const;
 }
 
-function createHostEditOperations(root: string, options?: { workspaceOnly?: boolean }) {
+function createHostEditOperations(
+  root: string,
+  options?: { workspaceOnly?: boolean; fsPolicy?: ToolFsPolicy },
+) {
   const workspaceOnly = options?.workspaceOnly ?? false;
 
   if (!workspaceOnly) {
@@ -617,6 +660,16 @@ function createHostEditOperations(root: string, options?: { workspaceOnly?: bool
   // When workspaceOnly is true, enforce workspace boundary
   return {
     readFile: async (absolutePath: string) => {
+      const resolved = path.resolve(absolutePath);
+      if (options?.fsPolicy) {
+        const allowedRoot = requireToolFsRoot(options.fsPolicy, resolved, "read");
+        const relative = path.relative(allowedRoot.path, resolved);
+        const safeRead = await readFileWithinRoot({
+          rootDir: allowedRoot.path,
+          relativePath: relative,
+        });
+        return safeRead.buffer;
+      }
       const relative = toRelativeWorkspacePath(root, absolutePath);
       const safeRead = await readFileWithinRoot({
         rootDir: root,
@@ -625,6 +678,18 @@ function createHostEditOperations(root: string, options?: { workspaceOnly?: bool
       return safeRead.buffer;
     },
     writeFile: async (absolutePath: string, content: string) => {
+      const resolved = path.resolve(absolutePath);
+      if (options?.fsPolicy) {
+        const allowedRoot = requireToolFsRoot(options.fsPolicy, resolved, "write");
+        const relative = path.relative(allowedRoot.path, resolved);
+        await writeFileWithinRoot({
+          rootDir: allowedRoot.path,
+          relativePath: relative,
+          data: content,
+          mkdir: true,
+        });
+        return;
+      }
       const relative = toRelativeWorkspacePath(root, absolutePath);
       await writeFileWithinRoot({
         rootDir: root,
@@ -634,6 +699,26 @@ function createHostEditOperations(root: string, options?: { workspaceOnly?: bool
       });
     },
     access: async (absolutePath: string) => {
+      const resolved = path.resolve(absolutePath);
+      if (options?.fsPolicy) {
+        if (!isToolFsPathAllowed(options.fsPolicy, resolved, "read")) {
+          return;
+        }
+        const allowedRoot = requireToolFsRoot(options.fsPolicy, resolved, "read");
+        const relative = path.relative(allowedRoot.path, resolved);
+        try {
+          const opened = await openFileWithinRoot({
+            rootDir: allowedRoot.path,
+            relativePath: relative,
+          });
+          await opened.handle.close().catch(() => {});
+        } catch (error) {
+          if (error instanceof SafeOpenError && error.code === "not-found") {
+            throw createFsAccessError("ENOENT", absolutePath);
+          }
+        }
+        return;
+      }
       let relative: string;
       try {
         relative = toRelativeWorkspacePath(root, absolutePath);
@@ -664,6 +749,26 @@ function createHostEditOperations(root: string, options?: { workspaceOnly?: bool
       }
     },
   } as const;
+}
+
+function assertToolFsAccess(
+  policy: ToolFsPolicy,
+  filePath: string,
+  access: "read" | "write",
+): void {
+  if (isToolFsPathAllowed(policy, filePath, access)) {
+    return;
+  }
+  const label = access === "write" ? "writable root" : "allowed root";
+  throw new Error(`Path escapes ${label}: ${filePath}`);
+}
+
+function requireToolFsRoot(policy: ToolFsPolicy, filePath: string, access: "read" | "write") {
+  const root = getToolFsAllowedRoot(policy, filePath, access);
+  if (!root) {
+    assertToolFsAccess(policy, filePath, access);
+  }
+  return root!;
 }
 
 function createFsAccessError(code: string, filePath: string): NodeJS.ErrnoException {

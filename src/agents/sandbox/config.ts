@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveAgentConfig } from "../agent-scope.js";
+import { normalizeToolFsGrants, resolveToolFsConfig } from "../tool-fs-policy.js";
 import {
   DEFAULT_SANDBOX_BROWSER_AUTOSTART_TIMEOUT_MS,
   DEFAULT_SANDBOX_BROWSER_CDP_PORT,
@@ -186,6 +187,18 @@ export function resolveSandboxConfigForAgent(
   });
 
   const toolPolicy = resolveSandboxToolPolicyForAgent(cfg, agentId);
+  const fsConfig = resolveToolFsConfig({ cfg, agentId });
+  const fsGrantBinds = normalizeToolFsGrants(fsConfig.grants).map((grant, index) => {
+    const suffix = grant.id?.trim() || `${index + 1}-${grant.access}`;
+    const safeSuffix = suffix.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const mode = grant.access === "ro" ? "ro" : "rw";
+    return `${grant.path}:/grants/${safeSuffix}:${mode}`;
+  });
+  const docker = resolveSandboxDockerConfig({
+    scope,
+    globalDocker: agent?.docker,
+    agentDocker: agentSandbox?.docker,
+  });
 
   return {
     mode: agentSandbox?.mode ?? agent?.mode ?? "off",
@@ -193,11 +206,10 @@ export function resolveSandboxConfigForAgent(
     workspaceAccess: agentSandbox?.workspaceAccess ?? agent?.workspaceAccess ?? "none",
     workspaceRoot:
       agentSandbox?.workspaceRoot ?? agent?.workspaceRoot ?? DEFAULT_SANDBOX_WORKSPACE_ROOT,
-    docker: resolveSandboxDockerConfig({
-      scope,
-      globalDocker: agent?.docker,
-      agentDocker: agentSandbox?.docker,
-    }),
+    docker: {
+      ...docker,
+      binds: [...(docker.binds ?? []), ...fsGrantBinds],
+    },
     browser: resolveSandboxBrowserConfig({
       scope,
       globalBrowser: agent?.browser,

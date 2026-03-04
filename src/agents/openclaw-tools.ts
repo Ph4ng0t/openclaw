@@ -14,6 +14,7 @@ import { createImageTool } from "./tools/image-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
 import { createNodesTool } from "./tools/nodes-tool.js";
 import { createPdfTool } from "./tools/pdf-tool.js";
+import { createRequestPrivilegeTool } from "./tools/request-privilege-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
@@ -148,6 +149,16 @@ export function createOpenClawTools(options?: {
     createGatewayTool({
       agentSessionKey: options?.agentSessionKey,
       config: options?.config,
+    }),
+    createRequestPrivilegeTool({
+      agentSessionKey: options?.agentSessionKey,
+      agentId: resolveSessionAgentId({
+        sessionKey: options?.agentSessionKey,
+        config: options?.config,
+      }),
+      channel: options?.agentChannel,
+      accountId: options?.agentAccountId,
+      senderId: options?.requesterSenderId ?? undefined,
     }),
     createAgentsListTool({
       agentSessionKey: options?.agentSessionKey,

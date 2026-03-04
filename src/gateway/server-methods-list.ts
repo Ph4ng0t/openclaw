@@ -28,6 +28,10 @@ const BASE_METHODS = [
   "exec.approval.request",
   "exec.approval.waitDecision",
   "exec.approval.resolve",
+  "privileged.request",
+  "privileged.waitDecision",
+  "privileged.resolve",
+  "privileged.list",
   "wizard.start",
   "wizard.next",
   "wizard.cancel",
@@ -123,5 +127,7 @@ export const GATEWAY_EVENTS = [
   "voicewake.changed",
   "exec.approval.requested",
   "exec.approval.resolved",
+  "privileged.requested",
+  "privileged.resolved",
   GATEWAY_EVENT_UPDATE_AVAILABLE,
 ];

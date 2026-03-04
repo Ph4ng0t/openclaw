@@ -153,6 +153,34 @@ const PluginEntrySchema = z
   })
   .strict();
 
+const PrivilegedSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    approvalTtlSec: z.number().int().positive().optional(),
+    requestTtlSec: z.number().int().positive().optional(),
+    requireOwnerForResolve: z.boolean().optional(),
+    gate: z
+      .object({
+        socketPath: z.string().optional(),
+        tokenPath: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    actions: z
+      .object({
+        fsGrant: z.boolean().optional(),
+        fsRevoke: z.boolean().optional(),
+        configPatch: z.boolean().optional(),
+        hostExec: z.boolean().optional(),
+        shutdown: z.boolean().optional(),
+        reboot: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .optional();
+
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
@@ -337,6 +365,7 @@ export const OpenClawSchema = z
       .strict()
       .optional(),
     secrets: SecretsConfigSchema,
+    privileged: PrivilegedSchema,
     auth: z
       .object({
         profiles: z

@@ -101,6 +101,15 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "privileged",
+    description: "Privileged gate daemon and request helpers",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../privileged-cli.js");
+      mod.registerPrivilegedCli(program);
+    },
+  },
+  {
     name: "nodes",
     description: "Manage gateway-owned node pairing and node commands",
     hasSubcommands: true,

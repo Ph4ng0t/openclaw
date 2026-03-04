@@ -275,6 +275,18 @@ export type ExecToolConfig = {
 
 export type FsToolsConfig = {
   /**
+   * Additional filesystem roots the agent may access when workspaceOnly=true.
+   * Reads honor both ro/rw grants; writes require rw grants.
+   */
+  grants?: Array<{
+    id?: string;
+    path: string;
+    access: "ro" | "rw";
+    persistent?: boolean;
+    expiresAt?: number;
+    reason?: string;
+  }>;
+  /**
    * Restrict filesystem tools (read/write/edit/apply_patch) to the agent workspace directory.
    * Default: false (unrestricted, matches legacy behavior).
    */

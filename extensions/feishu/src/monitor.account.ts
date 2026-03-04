@@ -22,6 +22,7 @@ import { isMentionForwardRequest } from "./mention.js";
 import { fetchBotOpenIdForMonitor } from "./monitor.startup.js";
 import { botOpenIds } from "./monitor.state.js";
 import { monitorWebhook, monitorWebSocket } from "./monitor.transport.js";
+import { FeishuPrivilegedApprovalHandler } from "./privileged-approvals.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu } from "./send.js";
 import type { ResolvedFeishuAccount } from "./types.js";
@@ -518,6 +519,11 @@ export async function monitorSingleAccount(params: MonitorSingleAccountParams): 
 
   const eventDispatcher = createEventDispatcher(account);
   const chatHistories = new Map<string, HistoryEntry[]>();
+  const privilegedApprovals = new FeishuPrivilegedApprovalHandler({
+    cfg,
+    accountId,
+    runtime,
+  });
 
   registerEventHandlers(eventDispatcher, {
     cfg,
@@ -527,8 +533,13 @@ export async function monitorSingleAccount(params: MonitorSingleAccountParams): 
     fireAndForget: true,
   });
 
-  if (connectionMode === "webhook") {
-    return monitorWebhook({ account, accountId, runtime, abortSignal, eventDispatcher });
+  await privilegedApprovals.start();
+  try {
+    if (connectionMode === "webhook") {
+      return await monitorWebhook({ account, accountId, runtime, abortSignal, eventDispatcher });
+    }
+    return await monitorWebSocket({ account, accountId, runtime, abortSignal, eventDispatcher });
+  } finally {
+    await privilegedApprovals.stop();
   }
-  return monitorWebSocket({ account, accountId, runtime, abortSignal, eventDispatcher });
 }

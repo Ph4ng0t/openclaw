@@ -48,6 +48,7 @@ import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
+import { startPrivilegedGateServer } from "../privileged/gate-server.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { CommandSecretAssignment } from "../secrets/command-config.js";
@@ -73,6 +74,7 @@ import {
 } from "./events.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
 import { NodeRegistry } from "./node-registry.js";
+import { PrivilegedRequestManager } from "./privileged-request-manager.js";
 import type { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import { createChannelManager } from "./server-channels.js";
 import { createAgentEventHandler } from "./server-chat.js";
@@ -85,6 +87,7 @@ import { GATEWAY_EVENTS, listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
 import { createExecApprovalHandlers } from "./server-methods/exec-approval.js";
 import { safeParseJson } from "./server-methods/nodes.helpers.js";
+import { createPrivilegedHandlers } from "./server-methods/privileged.js";
 import { createSecretsHandlers } from "./server-methods/secrets.js";
 import { hasConnectedMobileNode } from "./server-mobile-nodes.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
@@ -717,10 +720,22 @@ export async function startGatewayServer(
   }
 
   const execApprovalManager = new ExecApprovalManager();
+  const privilegedRequestManager = new PrivilegedRequestManager();
+  const privilegedGateEnabled = cfgAtStart.privileged?.enabled === true;
+  const privilegedGateAbort = privilegedGateEnabled ? new AbortController() : null;
+  const privilegedGateServer =
+    privilegedGateEnabled && !minimalTestGateway
+      ? await startPrivilegedGateServer({
+          cfg: cfgAtStart,
+          abortSignal: privilegedGateAbort?.signal,
+          log: (message) => log.info(message),
+        })
+      : null;
   const execApprovalForwarder = createExecApprovalForwarder();
   const execApprovalHandlers = createExecApprovalHandlers(execApprovalManager, {
     forwarder: execApprovalForwarder,
   });
+  const privilegedHandlers = createPrivilegedHandlers(privilegedRequestManager);
   const secretsHandlers = createSecretsHandlers({
     reloadSecrets: async () => {
       const active = getActiveSecretsRuntimeSnapshot();
@@ -766,6 +781,7 @@ export async function startGatewayServer(
     extraHandlers: {
       ...pluginRegistry.gatewayHandlers,
       ...execApprovalHandlers,
+      ...privilegedHandlers,
       ...secretsHandlers,
     },
     broadcast,
@@ -774,6 +790,7 @@ export async function startGatewayServer(
       cron,
       cronStorePath,
       execApprovalManager,
+      privilegedRequestManager,
       loadGatewayModelCatalog,
       getHealthCache,
       refreshHealthSnapshot: refreshGatewayHealthSnapshot,
@@ -963,6 +980,24 @@ export async function startGatewayServer(
     clients,
     configReloader,
     browserControl,
+    privilegedGateServer,
+    privilegedGateStop: privilegedGateAbort
+      ? async () => {
+          if (!privilegedGateServer) {
+            privilegedGateAbort.abort();
+            return;
+          }
+          if (!privilegedGateServer.listening) {
+            privilegedGateAbort.abort();
+            return;
+          }
+          const closePromise = new Promise<void>((resolve) => {
+            privilegedGateServer.once("close", () => resolve());
+          });
+          privilegedGateAbort.abort();
+          await closePromise;
+        }
+      : null,
     wss,
     httpServer,
     httpServers,

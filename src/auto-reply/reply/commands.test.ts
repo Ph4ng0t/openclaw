@@ -331,6 +331,63 @@ describe("/approve command", () => {
       );
     }
   });
+
+  it("stays silent for successful privileged approvals on Feishu", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { feishu: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/approve req-1 approve", cfg, {
+      Provider: "feishu",
+      Surface: "feishu",
+      SenderId: "ou-owner",
+    });
+
+    callGatewayMock.mockResolvedValue({ ok: true });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "privileged.resolve",
+        params: expect.objectContaining({ id: "req-1", decision: "approve" }),
+      }),
+    );
+  });
+});
+
+describe("permission commands", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stays silent for privileged request creation on Feishu", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { feishu: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/grant path /tmp/project ro", cfg, {
+      Provider: "feishu",
+      Surface: "feishu",
+      SenderId: "ou-owner",
+    });
+
+    callGatewayMock.mockResolvedValue({ id: "req-1" });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "privileged.request",
+        params: expect.objectContaining({
+          kind: "fs_grant",
+          payload: { path: "/tmp/project", access: "ro" },
+        }),
+      }),
+    );
+  });
 });
 
 describe("/compact command", () => {

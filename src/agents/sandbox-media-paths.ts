@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isPathInside } from "../infra/path-guards.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 
@@ -6,6 +7,7 @@ export type SandboxedBridgeMediaPathConfig = {
   root: string;
   bridge: SandboxFsBridge;
   workspaceOnly?: boolean;
+  allowedRoots?: string[];
 };
 
 export function createSandboxBridgeReadFile(params: {
@@ -28,6 +30,12 @@ export async function resolveSandboxedBridgeMediaPath(params: {
   const filePath = normalizeFileUrl(params.mediaPath);
   const enforceWorkspaceBoundary = async (hostPath: string) => {
     if (!params.sandbox.workspaceOnly) {
+      return;
+    }
+    if (
+      Array.isArray(params.sandbox.allowedRoots) &&
+      params.sandbox.allowedRoots.some((root) => isPathInside(root, hostPath))
+    ) {
       return;
     }
     await assertSandboxPath({

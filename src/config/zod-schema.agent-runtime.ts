@@ -419,9 +419,21 @@ const AgentToolExecSchema = z
 
 const ToolExecSchema = z.object(ToolExecBaseShape).strict().optional();
 
+const FsGrantSchema = z
+  .object({
+    id: z.string().optional(),
+    path: z.string(),
+    access: z.union([z.literal("ro"), z.literal("rw")]),
+    persistent: z.boolean().optional(),
+    expiresAt: z.number().int().positive().optional(),
+    reason: z.string().optional(),
+  })
+  .strict();
+
 const ToolFsSchema = z
   .object({
     workspaceOnly: z.boolean().optional(),
+    grants: z.array(FsGrantSchema).optional(),
   })
   .strict()
   .optional();
