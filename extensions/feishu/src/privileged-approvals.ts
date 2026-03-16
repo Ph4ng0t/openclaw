@@ -214,7 +214,6 @@ function buildResolvedCard(request: PrivilegedRequestRecord): Record<string, unk
     `- Status: **${statusLine}**`,
     `- Request ID: \`${request.id}\``,
     request.resolvedBy ? `- Resolved By: \`${request.resolvedBy}\`` : "",
-    request.result?.message ? `- Result: \`${request.result.message.replaceAll("`", "'")}\`` : "",
   ]
     .filter(Boolean)
     .join("\n");

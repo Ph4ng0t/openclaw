@@ -140,6 +140,12 @@ describe("feishu privileged approvals", () => {
     expect(card.schema).toBe("2.0");
     const body = card.body as { elements?: Array<Record<string, unknown>> } | undefined;
     expect(body?.elements?.some((element) => element.tag === "button")).toBe(false);
+    const markdown = body?.elements?.find((element) => element.tag === "markdown") as
+      | { content?: string }
+      | undefined;
+    expect(markdown?.content).toContain("Status: **Executed**");
+    expect(markdown?.content).not.toContain("Result:");
+    expect(markdown?.content).not.toContain("ok");
   });
 
   it("includes host exec details in the pending card", () => {
