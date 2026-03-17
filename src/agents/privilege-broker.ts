@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
 import {
@@ -47,6 +48,44 @@ function sameString(a: unknown, b: unknown): boolean {
 
 function normalizeHostExecCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
+}
+
+// Check if an fs grant covering the suggested path already exists in config.
+// This prevents re-requesting a card when a grant was already approved but the
+// sandbox hasn't finished initializing yet (container restart takes time).
+function isGrantAlreadyInConfig(
+  cfg: OpenClawConfig | undefined,
+  suggestedPath: string,
+  suggestedAccess: "ro" | "rw",
+): boolean {
+  const grants = cfg?.tools?.fs?.grants;
+  if (!Array.isArray(grants) || grants.length === 0) {
+    return false;
+  }
+  const resolvedSuggested = path.resolve(suggestedPath);
+  const now = Date.now();
+  for (const grant of grants) {
+    if (typeof grant.path !== "string") {
+      continue;
+    }
+    // Skip expired grants
+    if (typeof grant.expiresAt === "number" && grant.expiresAt <= now) {
+      continue;
+    }
+    const resolvedGrant = path.resolve(grant.path);
+    // Grant covers suggested path if it's the same path or a parent directory
+    const covers =
+      resolvedSuggested === resolvedGrant || resolvedSuggested.startsWith(resolvedGrant + "/");
+    if (!covers) {
+      continue;
+    }
+    // rw grant covers both ro and rw requests; ro grant only covers ro
+    if (suggestedAccess === "rw" && grant.access !== "rw") {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function findExistingFsGrantRequest(params: {
@@ -159,6 +198,11 @@ export async function requestMinimumFsPrivilege(params: {
   });
   if (duplicateId) {
     return { status: "duplicate", requestId: duplicateId };
+  }
+  // Grant was already approved and written to config (e.g. sandbox is mid-restart).
+  // Don't create a duplicate card — the agent will succeed once the sandbox is ready.
+  if (isGrantAlreadyInConfig(params.cfg, suggestion.path, suggestion.access)) {
+    return { status: "not-requested", reason: "Grant already exists in config." };
   }
 
   const expiresAt = Date.now() + suggestion.expiresInMs;

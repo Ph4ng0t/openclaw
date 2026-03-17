@@ -75,6 +75,9 @@ const BASE_RELOAD_RULES_TAIL: ReloadRule[] = [
   { prefix: "wizard", kind: "none" },
   { prefix: "logging", kind: "none" },
   { prefix: "agents", kind: "none" },
+  // fs grants/policy changes must update the heartbeat runner so the next agent
+  // run uses the fresh config (new mounts, updated ToolFsPolicy, etc.).
+  { prefix: "tools.fs", kind: "hot", actions: ["restart-heartbeat"] },
   { prefix: "tools", kind: "none" },
   { prefix: "bindings", kind: "none" },
   { prefix: "audio", kind: "none" },

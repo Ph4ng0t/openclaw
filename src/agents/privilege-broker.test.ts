@@ -103,6 +103,128 @@ describe("requestMinimumFsPrivilege", () => {
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not re-request when grant already exists in config (exact path)", async () => {
+    callGatewayMock.mockResolvedValueOnce({ requests: [] });
+
+    const result = await requestMinimumFsPrivilege({
+      cfg: {
+        tools: {
+          fs: {
+            grants: [{ path: "/tmp/private.txt", access: "ro", expiresAt: Date.now() + 1_800_000 }],
+          },
+        },
+      },
+      sessionKey: "agent:main:feishu:direct:ou_123",
+      agentId: "main",
+      error: {
+        kind: "fs_access_denied",
+        suggestedGrant: {
+          path: "/tmp/private.txt",
+          access: "ro",
+          expiresInMs: 1_800_000,
+        },
+      },
+    });
+
+    expect(result).toEqual({ status: "not-requested", reason: "Grant already exists in config." });
+    // privileged.request must NOT be called
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-request when a parent directory grant covers the requested path", async () => {
+    callGatewayMock.mockResolvedValueOnce({ requests: [] });
+
+    const result = await requestMinimumFsPrivilege({
+      cfg: {
+        tools: {
+          fs: {
+            grants: [{ path: "/tmp", access: "ro", expiresAt: Date.now() + 1_800_000 }],
+          },
+        },
+      },
+      sessionKey: "agent:main:feishu:direct:ou_123",
+      agentId: "main",
+      error: {
+        kind: "fs_access_denied",
+        suggestedGrant: {
+          path: "/tmp/private.txt",
+          access: "ro",
+          expiresInMs: 1_800_000,
+        },
+      },
+    });
+
+    expect(result).toEqual({ status: "not-requested", reason: "Grant already exists in config." });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-requests when the only matching grant is expired", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-04T10:00:00.000Z"));
+    try {
+      callGatewayMock
+        .mockResolvedValueOnce({ requests: [] })
+        .mockResolvedValueOnce({ id: "req-new", expiresAtMs: Date.now() + 1_800_000 });
+
+      const result = await requestMinimumFsPrivilege({
+        cfg: {
+          tools: {
+            fs: {
+              grants: [
+                // Expired
+                { path: "/tmp/private.txt", access: "ro", expiresAt: Date.now() - 1 },
+              ],
+            },
+          },
+        },
+        sessionKey: "agent:main:feishu:direct:ou_123",
+        agentId: "main",
+        error: {
+          kind: "fs_access_denied",
+          suggestedGrant: {
+            path: "/tmp/private.txt",
+            access: "ro",
+            expiresInMs: 1_800_000,
+          },
+        },
+      });
+
+      expect(result.status).toBe("requested");
+      expect(callGatewayMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-requests when config has ro grant but rw is needed", async () => {
+    callGatewayMock
+      .mockResolvedValueOnce({ requests: [] })
+      .mockResolvedValueOnce({ id: "req-rw", expiresAtMs: Date.now() + 900_000 });
+
+    const result = await requestMinimumFsPrivilege({
+      cfg: {
+        tools: {
+          fs: {
+            grants: [{ path: "/tmp/private.txt", access: "ro", expiresAt: Date.now() + 1_800_000 }],
+          },
+        },
+      },
+      sessionKey: "agent:main:feishu:direct:ou_123",
+      agentId: "main",
+      error: {
+        kind: "fs_access_denied",
+        suggestedGrant: {
+          path: "/tmp/private.txt",
+          access: "rw",
+          expiresInMs: 900_000,
+        },
+      },
+    });
+
+    expect(result.status).toBe("requested");
+    expect(callGatewayMock).toHaveBeenCalledTimes(2);
+  });
+
   it("creates a host_exec privilege request for denied host commands", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-04T10:00:00.000Z"));

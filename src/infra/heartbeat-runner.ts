@@ -1128,7 +1128,10 @@ export function startHeartbeatRunner(opts: {
       }
       try {
         const res = await runOnce({
-          cfg: state.cfg,
+          // Load fresh config for each agent run so runtime-approved grants (e.g.
+          // fs_grant via privileged approvals) are visible immediately. writeConfigFile
+          // clears the loadConfig cache, so this always picks up the latest on-disk state.
+          cfg: loadConfig(),
           agentId: targetAgent.agentId,
           heartbeat: targetAgent.heartbeat,
           reason,
@@ -1159,7 +1162,10 @@ export function startHeartbeatRunner(opts: {
       let res: HeartbeatRunResult;
       try {
         res = await runOnce({
-          cfg: state.cfg,
+          // Load fresh config for each agent run so runtime-approved grants (e.g.
+          // fs_grant via privileged approvals) are visible immediately. writeConfigFile
+          // clears the loadConfig cache, so this always picks up the latest on-disk state.
+          cfg: loadConfig(),
           agentId: agent.agentId,
           heartbeat: agent.heartbeat,
           reason,
