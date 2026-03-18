@@ -181,7 +181,17 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
           if (described.stack && described.stack !== described.message) {
             logDebug(`tools: ${normalizedName} failed stack:\n${described.stack}`);
           }
-          logError(`[tools] ${normalizedName} failed: ${described.message}`);
+          // ENOENT is normal control flow (agent probing for files that may not exist yet).
+          // Log at debug to avoid ERROR noise in the gateway log.
+          const errCode =
+            err && typeof err === "object" && "code" in err
+              ? String((err as { code?: unknown }).code)
+              : "";
+          if (errCode === "ENOENT") {
+            logDebug(`[tools] ${normalizedName} not found: ${described.message}`);
+          } else {
+            logError(`[tools] ${normalizedName} failed: ${described.message}`);
+          }
 
           if (isToolAccessError(err)) {
             return jsonResult({

@@ -93,6 +93,10 @@ function buildSandboxBrowserResolvedConfig(params: {
         color: DEFAULT_OPENCLAW_BROWSER_COLOR,
       },
     },
+    // The sandbox browser runs inside an isolated Docker container; the container
+    // network provides SSRF isolation. Allow private-network navigation so that
+    // system proxy env vars (e.g. HTTP_PROXY) don't block all browser tool calls.
+    ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
   };
 }
 
