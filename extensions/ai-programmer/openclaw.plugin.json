@@ -1,0 +1,17 @@
+{
+  "id": "ai-programmer",
+  "name": "AI Programmer",
+  "description": "Runs codex for coding tasks and returns a compact structured result.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "codexAgent": { "type": "string", "description": "acpx agent name, default: codex" },
+      "summarizerProvider": { "type": "string" },
+      "summarizerModel": { "type": "string" },
+      "codexTimeoutMs": { "type": "number" },
+      "summarizerTimeoutMs": { "type": "number" },
+      "maxSummaryChars": { "type": "number" }
+    }
+  }
+}

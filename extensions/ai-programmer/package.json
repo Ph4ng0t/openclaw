@@ -1,0 +1,16 @@
+{
+  "name": "@openclaw/ai-programmer",
+  "version": "2026.3.18",
+  "private": true,
+  "description": "OpenClaw AI Programmer plugin — runs codex and returns compact structured results",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48",
+    "ajv": "^8.18.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
