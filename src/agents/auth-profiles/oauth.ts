@@ -10,6 +10,7 @@ import { withFileLock } from "../../infra/file-lock.js";
 import { refreshQwenPortalCredentials } from "../../providers/qwen-portal-oauth.js";
 import { resolveSecretRefString, type SecretRefResolveCache } from "../../secrets/resolve.js";
 import { refreshChutesTokens } from "../chutes-oauth.js";
+import { writeCodexCliCredentials } from "../cli-credentials.js";
 import { AUTH_STORE_LOCK_OPTIONS, log } from "./constants.js";
 import { formatAuthDoctorHint } from "./doctor.js";
 import { ensureAuthStoreFile, resolveAuthStorePath } from "./paths.js";
@@ -192,6 +193,13 @@ async function refreshOAuthTokenWithLock(params: {
       type: "oauth",
     };
     saveAuthProfileStore(store, params.agentDir);
+
+    // Write refreshed openai-codex credentials back to ~/.codex/auth.json so
+    // the codex CLI (e.g. run via acpx) stays in sync with openclaw's token and
+    // doesn't independently attempt to refresh an already-used refresh token.
+    if (cred.provider === "openai-codex") {
+      writeCodexCliCredentials(result.newCredentials);
+    }
 
     return result;
   });

@@ -449,6 +449,42 @@ export function writeClaudeCliCredentials(
   return writeFile(newCredentials, { homeDir: options?.homeDir });
 }
 
+export function writeCodexCliCredentials(newCredentials: OAuthCredentials): boolean {
+  const authPath = resolveCodexCliAuthPath();
+
+  if (!fs.existsSync(authPath)) {
+    return false;
+  }
+
+  try {
+    const raw = loadJsonFile(authPath);
+    if (!raw || typeof raw !== "object") {
+      return false;
+    }
+
+    const data = raw as Record<string, unknown>;
+    const existingTokens = (data.tokens as Record<string, unknown> | undefined) ?? {};
+
+    // Preserve all existing token fields (e.g. account_id) and only update tokens.
+    data.tokens = {
+      ...existingTokens,
+      access_token: newCredentials.access,
+      refresh_token: newCredentials.refresh,
+    };
+
+    saveJsonFile(authPath, data);
+    log.info("wrote refreshed credentials to codex cli auth file", {
+      expires: new Date(newCredentials.expires).toISOString(),
+    });
+    return true;
+  } catch (error) {
+    log.warn("failed to write credentials to codex cli auth file", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 export function readCodexCliCredentials(options?: {
   platform?: NodeJS.Platform;
   execSync?: ExecSyncFn;

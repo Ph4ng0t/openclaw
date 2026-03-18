@@ -2,10 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import Ajv from "ajv";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk";
+import { createSubsystemLogger } from "../../../src/logging/subsystem.js";
 import { CODING_TASK_RESULT_SCHEMA, type CodingTaskResult } from "./types.js";
 
 // NOTE: same dynamic import pattern as llm-task — src-first, dist-fallback.
 type RunEmbeddedPiAgentFn = (params: Record<string, unknown>) => Promise<unknown>;
+
+const log = createSubsystemLogger("ai-programmer/summarizer");
 
 async function loadRunEmbeddedPiAgent(): Promise<RunEmbeddedPiAgentFn> {
   try {
@@ -58,6 +61,8 @@ export type SummarizerParams = {
   workspaceDir: string;
   timeoutMs: number;
   config: unknown;
+  /** Agent directory for auth profile resolution (pass the calling agent's dir). */
+  agentDir?: string;
 };
 
 export function fallbackResult(durationMs: number, errorDetails?: string): CodingTaskResult {
@@ -107,6 +112,10 @@ export async function summarizeCodingTask(
       model: params.model,
       ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
       authProfileIdSource: params.authProfileId ? "user" : "auto",
+      // Pass the calling agent's dir so auth is resolved from the correct agent's
+      // credential store (e.g. admin agent) rather than the default main agent,
+      // which may have a stale/expired token.
+      ...(params.agentDir ? { agentDir: params.agentDir } : {}),
       disableTools: true,
     });
 
@@ -133,8 +142,10 @@ export async function summarizeCodingTask(
     }
 
     return parsed as CodingTaskResult;
-  } catch {
-    return fallbackResult(0, "summarizer failed");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "unknown");
+    log.warn("summarizer failed", { provider: params.provider, model: params.model, error: msg });
+    return fallbackResult(0, `summarizer failed: ${msg.slice(0, 200)}`);
   } finally {
     if (tmpDir) {
       try {

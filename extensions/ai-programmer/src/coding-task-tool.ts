@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "../../../src/plugins/types.js";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "../../../src/plugins/types.js";
 import { fallbackResult, summarizeCodingTask } from "./summarizer.js";
 import type { CodingTaskResult } from "./types.js";
 
@@ -124,7 +124,8 @@ function buildErrorResult(err: unknown, durationMs: number): CodingTaskResult {
   return fallbackResult(durationMs, msg.slice(0, 300));
 }
 
-export function createCodingTaskTool(api: OpenClawPluginApi) {
+export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPluginToolContext) {
+  const agentDir = ctx?.agentDir;
   return {
     name: "ai-programmer",
     label: "AI Programmer",
@@ -300,6 +301,7 @@ export function createCodingTaskTool(api: OpenClawPluginApi) {
         workspaceDir,
         timeoutMs: summarizerTimeoutMs,
         config: api.config,
+        agentDir,
       });
 
       // Fill in actual duration (summarizer sets durationMs=0 per schema contract)

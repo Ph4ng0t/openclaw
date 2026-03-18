@@ -1,10 +1,12 @@
 import {
+  readCodexCliCredentialsCached,
   readQwenCliCredentialsCached,
   readMiniMaxCliCredentialsCached,
 } from "../cli-credentials.js";
 import {
   EXTERNAL_CLI_NEAR_EXPIRY_MS,
   EXTERNAL_CLI_SYNC_TTL_MS,
+  CODEX_CLI_PROFILE_ID,
   QWEN_CLI_PROFILE_ID,
   MINIMAX_CLI_PROFILE_ID,
   log,
@@ -129,6 +131,58 @@ export function syncExternalCliCredentials(store: AuthProfileStore): boolean {
     )
   ) {
     mutated = true;
+  }
+
+  // Sync from Codex CLI (openai-codex) into the dedicated codex-cli profile,
+  // and also refresh any expired openai-codex profiles from the codex CLI file.
+  // This handles the case where the codex CLI (run via acpx) refreshes its OAuth
+  // token independently, making the stored profile's refresh token stale.
+  if (
+    syncExternalCliCredentialsForProvider(
+      store,
+      CODEX_CLI_PROFILE_ID,
+      "openai-codex",
+      () => readCodexCliCredentialsCached({ ttlMs: EXTERNAL_CLI_SYNC_TTL_MS }),
+      now,
+    )
+  ) {
+    mutated = true;
+  }
+
+  // Also update any existing openai-codex profile whose access token is expired,
+  // using fresh credentials from the codex CLI file if available.
+  const codexCred = readCodexCliCredentialsCached({ ttlMs: EXTERNAL_CLI_SYNC_TTL_MS });
+  if (codexCred && codexCred.expires > now) {
+    for (const [profileId, existing] of Object.entries(store.profiles)) {
+      if (
+        existing.type !== "oauth" ||
+        existing.provider !== "openai-codex" ||
+        profileId === CODEX_CLI_PROFILE_ID
+      ) {
+        continue;
+      }
+      // Only refresh profiles whose stored access token is expired.
+      if (
+        typeof existing.expires === "number" &&
+        existing.expires > now + EXTERNAL_CLI_NEAR_EXPIRY_MS
+      ) {
+        continue;
+      }
+      if (!shallowEqualOAuthCredentials(existing, codexCred)) {
+        store.profiles[profileId] = {
+          ...existing,
+          access: codexCred.access,
+          refresh: codexCred.refresh,
+          expires: codexCred.expires,
+          ...(codexCred.accountId ? { accountId: codexCred.accountId } : {}),
+        };
+        mutated = true;
+        log.info("refreshed expired openai-codex profile from codex cli", {
+          profileId,
+          expires: new Date(codexCred.expires).toISOString(),
+        });
+      }
+    }
   }
 
   return mutated;
