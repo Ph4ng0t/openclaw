@@ -44,6 +44,8 @@ export type SandboxBrowserConfig = {
   autoStart: boolean;
   autoStartTimeoutMs: number;
   binds?: string[];
+  /** Additional env vars merged on top of docker.env for the browser container only. */
+  env?: Record<string, string>;
 };
 
 export type SandboxPruneConfig = {

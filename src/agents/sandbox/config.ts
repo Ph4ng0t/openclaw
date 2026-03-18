@@ -57,6 +57,11 @@ export function resolveSandboxBrowserDockerCreateConfig(params: {
     // For hashing and consistency, treat browser image as the docker image even though we
     // pass it separately as the final `docker create` argument.
     image: params.browser.image,
+    // Merge browser-specific env on top of docker.env so callers can set proxy/DNS vars
+    // for the browser container without affecting the main sandbox container.
+    ...(params.browser.env && Object.keys(params.browser.env).length > 0
+      ? { env: { ...params.docker.env, ...params.browser.env } }
+      : {}),
   };
   return params.browser.binds !== undefined ? { ...base, binds: params.browser.binds } : base;
 }
@@ -152,6 +157,11 @@ export function resolveSandboxBrowserConfig(params: {
       globalBrowser?.autoStartTimeoutMs ??
       DEFAULT_SANDBOX_BROWSER_AUTOSTART_TIMEOUT_MS,
     binds: bindsConfigured ? binds : undefined,
+    // Merge global + agent browser env (agent takes precedence).
+    env:
+      globalBrowser?.env || agentBrowser?.env
+        ? { ...globalBrowser?.env, ...agentBrowser?.env }
+        : undefined,
   };
 }
 

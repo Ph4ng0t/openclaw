@@ -219,6 +219,7 @@ export const SandboxBrowserSchema = z
     autoStart: z.boolean().optional(),
     autoStartTimeoutMs: z.number().int().positive().optional(),
     binds: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.network?.trim().toLowerCase() === "host") {
