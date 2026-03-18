@@ -10,6 +10,7 @@ RUN apt-get update \
     curl \
     fonts-liberation \
     fonts-noto-color-emoji \
+    fonts-noto-cjk \
     git \
     jq \
     novnc \
