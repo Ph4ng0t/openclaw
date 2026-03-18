@@ -11,7 +11,16 @@
       "summarizerModel": { "type": "string" },
       "codexTimeoutMs": { "type": "number" },
       "summarizerTimeoutMs": { "type": "number" },
-      "maxSummaryChars": { "type": "number" }
+      "maxSummaryChars": { "type": "number" },
+      "sandbox": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "image": { "type": "string" },
+          "codexAuthDir": { "type": "string" }
+        }
+      }
     }
   }
 }

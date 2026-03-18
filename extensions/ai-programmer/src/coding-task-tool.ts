@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "../../../src/plugins/types.js";
+import {
+  startDockerSandbox,
+  stopDockerSandbox,
+  type DockerSandboxHandle,
+} from "./docker-sandbox.js";
 import { fallbackResult, summarizeCodingTask } from "./summarizer.js";
 import type { CodingTaskResult } from "./types.js";
 
@@ -9,6 +14,12 @@ const DEFAULT_CODEX_TIMEOUT_MS = 300_000; // 5 minutes
 const DEFAULT_SUMMARIZER_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKSPACE_DIR = "/home/lawliet/projects/AutoCompany/AI-Programmer";
 
+type SandboxCfg = {
+  enabled?: boolean;
+  image?: string; // Default: "ai-programmer-sandbox:latest"
+  codexAuthDir?: string; // Default: ~/.codex
+};
+
 type PluginCfg = {
   codexAgent?: string;
   summarizerProvider?: string;
@@ -16,6 +27,7 @@ type PluginCfg = {
   codexTimeoutMs?: number;
   summarizerTimeoutMs?: number;
   maxSummaryChars?: number;
+  sandbox?: SandboxCfg;
 };
 
 // Minimal interface for the AcpxRuntime we need (avoids importing the full type)
@@ -188,6 +200,40 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
 
       const startTime = Date.now();
 
+      const sandboxCfg = pluginCfg.sandbox;
+      let sandboxHandle: DockerSandboxHandle | null = null;
+      let acpxCommand: string | undefined;
+
+      if (sandboxCfg?.enabled === true) {
+        const image = sandboxCfg.image?.trim() || "ai-programmer-sandbox:latest";
+        // Read fsGrants from config — same grants that authorize the Feishu sandbox container's mounts
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const rawGrants = (api.config as any)?.tools?.fs?.grants;
+        const fsGrants: Array<{ path: string; access: "ro" | "rw" }> = Array.isArray(rawGrants)
+          ? rawGrants.filter(
+              (g: unknown) => typeof (g as Record<string, unknown>)?.path === "string",
+            )
+          : [];
+        try {
+          sandboxHandle = await startDockerSandbox({
+            image,
+            workspaceDir,
+            fsGrants,
+            codexAuthDir: sandboxCfg.codexAuthDir,
+          });
+          acpxCommand = sandboxHandle.wrapperScriptPath;
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(buildErrorResult(err, Date.now() - startTime), null, 2),
+              },
+            ],
+          };
+        }
+      }
+
       let acpxRuntime: MinimalAcpRuntime;
       try {
         const { AcpxRuntime, resolveAcpxPluginConfig } = await loadAcpxRuntime();
@@ -197,11 +243,15 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
             nonInteractivePermissions: "deny",
             // Pass timeout to acpx as a belt-and-suspenders guard alongside AbortController
             timeoutSeconds: Math.ceil(codexTimeoutMs / 1000) + 10,
+            ...(acpxCommand ? { command: acpxCommand } : {}),
           },
           workspaceDir,
         });
         acpxRuntime = new AcpxRuntime(resolvedConfig);
       } catch (err) {
+        if (sandboxHandle) {
+          await stopDockerSandbox(sandboxHandle).catch(() => {});
+        }
         return {
           content: [
             {
@@ -224,6 +274,9 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
           mode: "oneshot",
         });
       } catch (err) {
+        if (sandboxHandle) {
+          await stopDockerSandbox(sandboxHandle).catch(() => {});
+        }
         return {
           content: [
             {
@@ -268,6 +321,9 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
           await acpxRuntime.close({ handle, reason: "task-complete" });
         } catch {
           // Ignore close errors
+        }
+        if (sandboxHandle) {
+          await stopDockerSandbox(sandboxHandle).catch(() => {});
         }
       }
 
