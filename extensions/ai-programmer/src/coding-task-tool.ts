@@ -130,18 +130,21 @@ export function createCodingTaskTool(api: OpenClawPluginApi) {
     label: "AI Programmer",
     description:
       "Run a coding task via codex and return a compact structured result (status, summary, filesChanged, testOutcome). All verbosity from codex stays internal — only compact JSON is returned. Use for all coding/programming tasks.",
-    parameters: Type.Object({
-      task: Type.String({ description: "Coding task description for codex." }),
-      workspaceDir: Type.Optional(
-        Type.String({ description: "Workspace directory for codex to operate in." }),
-      ),
-      timeoutMs: Type.Optional(
-        Type.Number({ description: "Codex timeout in milliseconds (default: 300000)." }),
-      ),
-      context: Type.Optional(
-        Type.String({ description: "Optional extra context to append to the task." }),
-      ),
-    }),
+    parameters: Type.Object(
+      {
+        task: Type.String({ description: "Coding task description for codex." }),
+        workspaceDir: Type.Optional(
+          Type.String({ description: "Workspace directory for codex to operate in." }),
+        ),
+        timeoutMs: Type.Optional(
+          Type.Integer({ description: "Codex timeout in milliseconds (default: 300000)." }),
+        ),
+        context: Type.Optional(
+          Type.String({ description: "Optional extra context to append to the task." }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
 
     async execute(_id: string, params: Record<string, unknown>) {
       const task = typeof params.task === "string" ? params.task.trim() : "";
