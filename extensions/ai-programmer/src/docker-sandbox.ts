@@ -20,6 +20,14 @@ const PROXY_ENV_NAMES = [
 
 export type FsGrant = { path: string; access: "ro" | "rw" };
 
+// Explicit proxy overrides — take precedence over host env vars when set.
+export type ProxyOverrides = {
+  httpProxy?: string;
+  httpsProxy?: string;
+  allProxy?: string;
+  noProxy?: string;
+};
+
 export type DockerSandboxHandle = {
   containerName: string;
   wrapperScriptPath: string;
@@ -39,18 +47,47 @@ function rewriteLoopbackProxyUrl(raw: string): { value: string; rewroteLoopback:
   }
 }
 
-function buildDockerProxyEnvArgs(): { envArgs: string[]; needsHostGateway: boolean } {
+function buildDockerProxyEnvArgs(
+  overrides?: ProxyOverrides,
+  // When true (--network=host), 127.0.0.1 is directly reachable — skip rewriting.
+  skipLoopbackRewrite?: boolean,
+): {
+  envArgs: string[];
+  needsHostGateway: boolean;
+} {
+  // Merge env vars with explicit overrides (overrides take precedence).
+  const merged: Partial<Record<(typeof PROXY_ENV_NAMES)[number], string>> = {};
+  for (const name of PROXY_ENV_NAMES) {
+    const raw = process.env[name]?.trim();
+    if (raw) merged[name] = raw;
+  }
+  if (overrides?.httpProxy) {
+    merged["HTTP_PROXY"] = overrides.httpProxy;
+    merged["http_proxy"] = overrides.httpProxy;
+  }
+  if (overrides?.httpsProxy) {
+    merged["HTTPS_PROXY"] = overrides.httpsProxy;
+    merged["https_proxy"] = overrides.httpsProxy;
+  }
+  if (overrides?.allProxy) {
+    merged["ALL_PROXY"] = overrides.allProxy;
+    merged["all_proxy"] = overrides.allProxy;
+  }
+  if (overrides?.noProxy) {
+    merged["NO_PROXY"] = overrides.noProxy;
+    merged["no_proxy"] = overrides.noProxy;
+  }
+
   const envArgs: string[] = [];
   let needsHostGateway = false;
 
   for (const name of PROXY_ENV_NAMES) {
-    const raw = process.env[name]?.trim();
-    if (!raw) {
-      continue;
-    }
-    const rewritten = name.toLowerCase().endsWith("_proxy")
-      ? rewriteLoopbackProxyUrl(raw)
-      : { value: raw, rewroteLoopback: false };
+    const raw = merged[name]?.trim();
+    if (!raw) continue;
+    const rewritten =
+      !skipLoopbackRewrite && name.toLowerCase().endsWith("_proxy")
+        ? rewriteLoopbackProxyUrl(raw)
+        : { value: raw, rewroteLoopback: false };
     envArgs.push("-e", `${name}=${rewritten.value}`);
     needsHostGateway ||= rewritten.rewroteLoopback;
   }
@@ -63,12 +100,19 @@ export async function startDockerSandbox(params: {
   workspaceDir: string;
   fsGrants?: FsGrant[]; // from api.config.tools.fs.grants
   codexAuthDir?: string; // default: ~/.codex
+  proxyOverrides?: ProxyOverrides; // explicit proxy settings from plugin config
+  // Share host network namespace so 127.0.0.1 proxy is reachable directly.
+  // Linux only; resolves stream-disconnect issues caused by Docker bridge NAT.
+  useHostNetwork?: boolean;
 }): Promise<DockerSandboxHandle> {
   const codexAuthDir = params.codexAuthDir?.trim() || path.join(homedir(), ".codex");
   const id = randomBytes(8).toString("hex");
   const containerName = `ai-programmer-sandbox-${id}`;
   const wrapperScriptPath = path.join(tmpdir(), `ai-programmer-wrapper-${id}.sh`);
-  const { envArgs, needsHostGateway } = buildDockerProxyEnvArgs();
+  const { envArgs, needsHostGateway } = buildDockerProxyEnvArgs(
+    params.proxyOverrides,
+    params.useHostNetwork,
+  );
 
   const mountArgs: string[] = [
     // workspace at same path (rw)
@@ -93,7 +137,14 @@ export async function startDockerSandbox(params: {
     containerName,
     "--rm",
     "-d",
-    ...(needsHostGateway ? ["--add-host", "host.docker.internal:host-gateway"] : []),
+    // --network=host lets the container reach 127.0.0.1 directly (same as host),
+    // avoiding Docker bridge NAT which can drop long-lived proxy streams.
+    // Mutually exclusive with --add-host, so only one branch runs.
+    ...(params.useHostNetwork
+      ? ["--network", "host"]
+      : needsHostGateway
+        ? ["--add-host", "host.docker.internal:host-gateway"]
+        : []),
     ...envArgs,
     ...mountArgs,
     params.image,

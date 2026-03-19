@@ -18,7 +18,27 @@
         "properties": {
           "enabled": { "type": "boolean" },
           "image": { "type": "string" },
-          "codexAuthDir": { "type": "string" }
+          "codexAuthDir": { "type": "string" },
+          "useHostNetwork": {
+            "type": "boolean",
+            "description": "Share host network namespace (Linux only). Lets the container reach 127.0.0.1 proxy directly, avoiding Docker bridge stream-disconnect issues."
+          },
+          "proxy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "httpProxy": {
+                "type": "string",
+                "description": "HTTP proxy URL, e.g. http://127.0.0.1:7890"
+              },
+              "httpsProxy": {
+                "type": "string",
+                "description": "HTTPS proxy URL, e.g. http://127.0.0.1:7890"
+              },
+              "allProxy": { "type": "string", "description": "All-protocols proxy URL" },
+              "noProxy": { "type": "string", "description": "Comma-separated no-proxy host list" }
+            }
+          }
         }
       }
     }

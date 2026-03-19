@@ -5,6 +5,7 @@ import {
   startDockerSandbox,
   stopDockerSandbox,
   type DockerSandboxHandle,
+  type ProxyOverrides,
 } from "./docker-sandbox.js";
 import { fallbackResult, summarizeCodingTask } from "./summarizer.js";
 import type { CodingTaskResult } from "./types.js";
@@ -18,6 +19,16 @@ type SandboxCfg = {
   enabled?: boolean;
   image?: string; // Default: "ai-programmer-sandbox:latest"
   codexAuthDir?: string; // Default: ~/.codex
+  // Explicit proxy settings forwarded into the sandbox container.
+  // If omitted, host HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY env vars are used automatically.
+  proxy?: {
+    httpProxy?: string;
+    httpsProxy?: string;
+    allProxy?: string;
+    noProxy?: string;
+  };
+  // Use host network namespace so 127.0.0.1 proxy is reachable directly (Linux only).
+  useHostNetwork?: boolean;
 };
 
 type PluginCfg = {
@@ -215,11 +226,21 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
             )
           : [];
         try {
+          const proxyOverrides: ProxyOverrides | undefined = sandboxCfg.proxy
+            ? {
+                httpProxy: sandboxCfg.proxy.httpProxy,
+                httpsProxy: sandboxCfg.proxy.httpsProxy,
+                allProxy: sandboxCfg.proxy.allProxy,
+                noProxy: sandboxCfg.proxy.noProxy,
+              }
+            : undefined;
           sandboxHandle = await startDockerSandbox({
             image,
             workspaceDir,
             fsGrants,
             codexAuthDir: sandboxCfg.codexAuthDir,
+            proxyOverrides,
+            useHostNetwork: sandboxCfg.useHostNetwork,
           });
           acpxCommand = sandboxHandle.wrapperScriptPath;
         } catch (err) {
