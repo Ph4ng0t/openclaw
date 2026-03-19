@@ -7,6 +7,16 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const DOCKER_BIN = "docker";
+const PROXY_ENV_NAMES = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+] as const;
 
 export type FsGrant = { path: string; access: "ro" | "rw" };
 
@@ -14,6 +24,39 @@ export type DockerSandboxHandle = {
   containerName: string;
   wrapperScriptPath: string;
 };
+
+function rewriteLoopbackProxyUrl(raw: string): { value: string; rewroteLoopback: boolean } {
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.trim().toLowerCase();
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+      return { value: raw, rewroteLoopback: false };
+    }
+    url.hostname = "host.docker.internal";
+    return { value: url.toString(), rewroteLoopback: true };
+  } catch {
+    return { value: raw, rewroteLoopback: false };
+  }
+}
+
+function buildDockerProxyEnvArgs(): { envArgs: string[]; needsHostGateway: boolean } {
+  const envArgs: string[] = [];
+  let needsHostGateway = false;
+
+  for (const name of PROXY_ENV_NAMES) {
+    const raw = process.env[name]?.trim();
+    if (!raw) {
+      continue;
+    }
+    const rewritten = name.toLowerCase().endsWith("_proxy")
+      ? rewriteLoopbackProxyUrl(raw)
+      : { value: raw, rewroteLoopback: false };
+    envArgs.push("-e", `${name}=${rewritten.value}`);
+    needsHostGateway ||= rewritten.rewroteLoopback;
+  }
+
+  return { envArgs, needsHostGateway };
+}
 
 export async function startDockerSandbox(params: {
   image: string;
@@ -25,14 +68,15 @@ export async function startDockerSandbox(params: {
   const id = randomBytes(8).toString("hex");
   const containerName = `ai-programmer-sandbox-${id}`;
   const wrapperScriptPath = path.join(tmpdir(), `ai-programmer-wrapper-${id}.sh`);
+  const { envArgs, needsHostGateway } = buildDockerProxyEnvArgs();
 
   const mountArgs: string[] = [
     // workspace at same path (rw)
     "-v",
     `${params.workspaceDir}:${params.workspaceDir}`,
-    // codex auth (ro)
+    // codex updates auth/session state during normal operation; keep this writable.
     "-v",
-    `${codexAuthDir}:/root/.codex:ro`,
+    `${codexAuthDir}:/root/.codex`,
   ];
 
   // fsGrant mounts at same host paths (matching the Feishu sandbox container)
@@ -49,6 +93,8 @@ export async function startDockerSandbox(params: {
     containerName,
     "--rm",
     "-d",
+    ...(needsHostGateway ? ["--add-host", "host.docker.internal:host-gateway"] : []),
+    ...envArgs,
     ...mountArgs,
     params.image,
     "tail",

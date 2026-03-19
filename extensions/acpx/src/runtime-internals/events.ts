@@ -9,9 +9,33 @@ import {
   isRecord,
 } from "./shared.js";
 
+function extractJsonRpcError(
+  value: Record<string, unknown>,
+): { message: string; code?: string; retryable?: boolean } | null {
+  const rawError = value.error;
+  if (!isRecord(rawError)) {
+    return null;
+  }
+
+  const code =
+    asOptionalString(rawError.code) ??
+    (typeof rawError.code === "number" && Number.isFinite(rawError.code)
+      ? String(rawError.code)
+      : undefined);
+  const data = isRecord(rawError.data) ? rawError.data : undefined;
+  const detailedMessage = asTrimmedString(data?.message);
+  const message = detailedMessage || asTrimmedString(rawError.message) || "acpx reported an error";
+  const retryable = asOptionalBoolean(data?.retryable) ?? asOptionalBoolean(rawError.retryable);
+  return { message, ...(code ? { code } : {}), ...(retryable !== undefined ? { retryable } : {}) };
+}
+
 export function toAcpxErrorEvent(value: unknown): AcpxErrorEvent | null {
   if (!isRecord(value)) {
     return null;
+  }
+  const jsonRpcError = extractJsonRpcError(value);
+  if (jsonRpcError) {
+    return jsonRpcError;
   }
   if (asTrimmedString(value.type) !== "error") {
     return null;
@@ -179,6 +203,16 @@ export function parsePromptEventLine(line: string): AcpRuntimeEvent | null {
 
   if (!isRecord(parsed)) {
     return null;
+  }
+
+  const jsonRpcError = extractJsonRpcError(parsed);
+  if (jsonRpcError) {
+    return {
+      type: "error",
+      message: jsonRpcError.message,
+      ...(jsonRpcError.code ? { code: jsonRpcError.code } : {}),
+      ...(jsonRpcError.retryable !== undefined ? { retryable: jsonRpcError.retryable } : {}),
+    };
   }
 
   const structured = resolveStructuredPromptPayload(parsed);

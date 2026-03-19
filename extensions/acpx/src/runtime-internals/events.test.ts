@@ -78,4 +78,23 @@ describe("parsePromptEventLine", () => {
       stopReason: "end_turn",
     });
   });
+
+  it("surfaces JSON-RPC errors with detailed nested messages", () => {
+    const line = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      error: {
+        code: -32603,
+        message: "Internal error",
+        data: {
+          message: "stream disconnected before completion",
+        },
+      },
+    });
+    expect(parsePromptEventLine(line)).toEqual({
+      type: "error",
+      code: "-32603",
+      message: "stream disconnected before completion",
+    });
+  });
 });
