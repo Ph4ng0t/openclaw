@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -118,10 +118,18 @@ export async function startDockerSandbox(params: {
     // workspace at same path (rw)
     "-v",
     `${params.workspaceDir}:${params.workspaceDir}`,
-    // codex updates auth/session state during normal operation; keep this writable.
-    "-v",
-    `${codexAuthDir}:/root/.codex`,
   ];
+
+  // Mount only auth.json (RO) rather than the full codex dir.
+  // Mounting the full dir inherits the host config.toml which may contain fields
+  // that are invalid for the codex-acp version installed in the image (e.g.
+  // stream_idle_timeout_ms in [features] is parsed as boolean and causes a hard
+  // startup crash). The container's /root/.codex for session/state writes is
+  // ephemeral and that is fine for a one-shot sandbox invocation.
+  const codexAuthFile = path.join(codexAuthDir, "auth.json");
+  if (existsSync(codexAuthFile)) {
+    mountArgs.push("-v", `${codexAuthFile}:/root/.codex/auth.json:ro`);
+  }
 
   // fsGrant mounts at same host paths (matching the Feishu sandbox container)
   for (const grant of params.fsGrants ?? []) {
