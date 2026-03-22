@@ -1,6 +1,11 @@
 import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isCompactionFailureError, isLikelyContextOverflowError } from "../pi-embedded-helpers.js";
+import {
+  classifyFailoverReason,
+  isCompactionFailureError,
+  isFailoverErrorMessage,
+  isLikelyContextOverflowError,
+} from "../pi-embedded-helpers.js";
 
 vi.mock("../../utils.js", () => ({
   resolveUserPath: vi.fn((p: string) => p),
@@ -25,6 +30,8 @@ import {
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 const mockedIsCompactionFailureError = vi.mocked(isCompactionFailureError);
+const mockedClassifyFailoverReason = vi.mocked(classifyFailoverReason);
+const mockedIsFailoverErrorMessage = vi.mocked(isFailoverErrorMessage);
 const mockedIsLikelyContextOverflowError = vi.mocked(isLikelyContextOverflowError);
 
 describe("overflow compaction in run loop", () => {
@@ -49,6 +56,8 @@ describe("overflow compaction in run loop", () => {
         lower.includes("prompt too large")
       );
     });
+    mockedClassifyFailoverReason.mockImplementation(() => null);
+    mockedIsFailoverErrorMessage.mockImplementation(() => false);
     mockedCompactDirect.mockResolvedValue({
       ok: false,
       compacted: false,
@@ -305,6 +314,70 @@ describe("overflow compaction in run loop", () => {
 
     const result = await runEmbeddedPiAgent(baseParams);
 
+    expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("timed out");
+  });
+
+  it("retries prompt transport failures in the same session before surfacing an error", async () => {
+    mockedClassifyFailoverReason.mockImplementation((msg?: string) =>
+      String(msg ?? "").includes("ECONNRESET") ? "timeout" : null,
+    );
+    mockedIsFailoverErrorMessage.mockImplementation((msg?: string) =>
+      String(msg ?? "").includes("ECONNRESET"),
+    );
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          promptError: new Error("network error: ECONNRESET"),
+          assistantTexts: [],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(result.meta.error).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("transient transport failure during prompt"),
+    );
+  });
+
+  it("retries timeout failures without progress before rotating accounts or failing", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          aborted: true,
+          timedOut: true,
+          timedOutDuringCompaction: false,
+          assistantTexts: [],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(result.meta.error).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("transient transport failure after prompt"),
+    );
+  });
+
+  it("does not auto-retry timed out attempts after tool activity to avoid duplicate side effects", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        aborted: true,
+        timedOut: true,
+        timedOutDuringCompaction: false,
+        assistantTexts: [],
+        toolMetas: [{ toolName: "exec", meta: "wrote file" }],
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
     expect(result.payloads?.[0]?.isError).toBe(true);
     expect(result.payloads?.[0]?.text).toContain("timed out");
   });

@@ -6,7 +6,18 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "codexAgent": { "type": "string", "description": "acpx agent name, default: codex" },
+      "codexCommand": {
+        "type": "string",
+        "description": "Host codex CLI command to run, default: codex"
+      },
+      "workspaceDir": {
+        "type": "string",
+        "description": "Dedicated workspace for ai-programmer. Defaults to ~/.openclaw/workspace/ai-programmer and does not inherit the orchestrator workspace."
+      },
+      "allowTaskWorkspaceOverride": {
+        "type": "boolean",
+        "description": "Allow callers to override ai-programmer's workspaceDir per tool invocation. Disabled by default so orchestrator requests stay inside the dedicated ai-programmer workspace."
+      },
       "summarizerProvider": { "type": "string" },
       "summarizerModel": { "type": "string" },
       "codexTimeoutMs": { "type": "number" },
@@ -19,6 +30,10 @@
           "enabled": { "type": "boolean" },
           "image": { "type": "string" },
           "codexAuthDir": { "type": "string" },
+          "command": {
+            "type": "string",
+            "description": "Executable path inside the sandbox container. Defaults to codex."
+          },
           "useHostNetwork": {
             "type": "boolean",
             "description": "Share host network namespace (Linux only). Lets the container reach 127.0.0.1 proxy directly, avoiding Docker bridge stream-disconnect issues."

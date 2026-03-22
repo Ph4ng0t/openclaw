@@ -1,3 +1,6 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 export type PrivilegedCommandSpec = {
   id: string;
   description: string;
@@ -5,6 +8,8 @@ export type PrivilegedCommandSpec = {
   allowCwd?: boolean;
   dangerous: boolean;
 };
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 export const PRIVILEGED_COMMANDS: Record<string, PrivilegedCommandSpec> = {
   "system.shutdown": {
@@ -46,6 +51,12 @@ export const PRIVILEGED_COMMANDS: Record<string, PrivilegedCommandSpec> = {
     argv: ["pnpm", "build"],
     allowCwd: true,
     dangerous: false,
+  },
+  "openclaw.deploy.ai-programmer": {
+    id: "openclaw.deploy.ai-programmer",
+    description: "Rebuild the ai-programmer sandbox image and restart the gateway",
+    argv: ["bash", path.join(REPO_ROOT, "scripts", "deploy-ai-programmer.sh")],
+    dangerous: true,
   },
 };
 

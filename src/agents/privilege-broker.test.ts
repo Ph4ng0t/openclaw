@@ -6,7 +6,11 @@ vi.mock("../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
 }));
 
-import { requestHostExecPrivilege, requestMinimumFsPrivilege } from "./privilege-broker.js";
+import {
+  requestHostExecPrivilege,
+  requestMinimumFsPrivilege,
+  requestRegisteredHostExecPrivilege,
+} from "./privilege-broker.js";
 
 describe("requestMinimumFsPrivilege", () => {
   beforeEach(() => {
@@ -276,5 +280,74 @@ describe("requestMinimumFsPrivilege", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("creates a host_exec privilege request for a registered command id", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-04T10:00:00.000Z"));
+    try {
+      callGatewayMock
+        .mockResolvedValueOnce({ requests: [] })
+        .mockResolvedValueOnce({ id: "req-registered", expiresAtMs: Date.now() + 1_800_000 });
+
+      const result = await requestRegisteredHostExecPrivilege({
+        cfg: {},
+        sessionKey: "agent:main:test",
+        agentId: "main",
+        request: {
+          commandId: "openclaw.deploy.ai-programmer",
+        },
+      });
+
+      expect(result).toEqual({
+        status: "requested",
+        requestId: "req-registered",
+        expiresAtMs: Date.now() + 1_800_000,
+      });
+      expect(callGatewayMock).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          method: "privileged.request",
+          params: expect.objectContaining({
+            kind: "host_exec",
+            payload: expect.objectContaining({
+              commandId: "openclaw.deploy.ai-programmer",
+            }),
+            requestedBy: expect.objectContaining({
+              sessionKey: "agent:main:test",
+              agentId: "main",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reuses an existing pending registered host_exec request", async () => {
+    callGatewayMock.mockResolvedValueOnce({
+      requests: [
+        {
+          id: "req-existing-registered",
+          kind: "host_exec",
+          status: "pending",
+          payload: { commandId: "openclaw.deploy.ai-programmer" },
+          requestedBy: { sessionKey: "agent:main:test", agentId: "main" },
+        },
+      ],
+    });
+
+    const result = await requestRegisteredHostExecPrivilege({
+      cfg: {},
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      request: {
+        commandId: "openclaw.deploy.ai-programmer",
+      },
+    });
+
+    expect(result).toEqual({ status: "duplicate", requestId: "req-existing-registered" });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -34,6 +34,85 @@ export type DockerSandboxHandle = {
   configTomlPath?: string;
 };
 
+function normalizeMountSource(value: string): string {
+  return path.resolve(value.trim());
+}
+
+function formatExecFileError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err ?? "unknown error");
+  }
+  const extras: string[] = [];
+  const candidate = err as Error & { stdout?: string; stderr?: string; code?: number | string };
+  if (candidate.code != null) {
+    extras.push(`code=${String(candidate.code)}`);
+  }
+  const stderr = candidate.stderr?.trim();
+  const stdout = candidate.stdout?.trim();
+  if (stderr) {
+    extras.push(`stderr=${stderr}`);
+  } else if (stdout) {
+    extras.push(`stdout=${stdout}`);
+  }
+  return extras.length > 0 ? `${err.message} | ${extras.join(" | ")}` : err.message;
+}
+
+function usesLoopbackProxy(raw: string | undefined): boolean {
+  const value = raw?.trim();
+  if (!value) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    const host = url.hostname.trim().toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+export function shouldUseHostNetworkByDefault(params: {
+  useHostNetwork?: boolean;
+  proxyOverrides?: ProxyOverrides;
+}): boolean {
+  if (typeof params.useHostNetwork === "boolean") {
+    return params.useHostNetwork;
+  }
+  if (process.platform !== "linux") {
+    return false;
+  }
+  const candidates = [
+    params.proxyOverrides?.httpProxy,
+    params.proxyOverrides?.httpsProxy,
+    params.proxyOverrides?.allProxy,
+    process.env.HTTP_PROXY,
+    process.env.HTTPS_PROXY,
+    process.env.ALL_PROXY,
+    process.env.http_proxy,
+    process.env.https_proxy,
+    process.env.all_proxy,
+  ];
+  return candidates.some((value) => usesLoopbackProxy(value));
+}
+
+async function verifySandboxCommand(containerName: string, command: string): Promise<void> {
+  try {
+    await execFileAsync(DOCKER_BIN, [
+      "exec",
+      containerName,
+      "sh",
+      "-lc",
+      'command -v "$1" >/dev/null 2>&1 || [ -x "$1" ]',
+      "sh",
+      command,
+    ]);
+  } catch {
+    throw new Error(
+      `Sandbox command "${command}" is not available in the container. Install codex in the image, or set ai-programmer sandbox.command to the executable path inside the container.`,
+    );
+  }
+}
+
 function rewriteLoopbackProxyUrl(raw: string): { value: string; rewroteLoopback: boolean } {
   try {
     const url = new URL(raw);
@@ -101,19 +180,25 @@ export async function startDockerSandbox(params: {
   workspaceDir: string;
   fsGrants?: FsGrant[]; // from api.config.tools.fs.grants
   codexAuthDir?: string; // default: ~/.codex
+  sandboxCommand?: string; // default: "codex"
   proxyOverrides?: ProxyOverrides; // explicit proxy settings from plugin config
   // Share host network namespace so 127.0.0.1 proxy is reachable directly.
   // Linux only; resolves stream-disconnect issues caused by Docker bridge NAT.
   useHostNetwork?: boolean;
 }): Promise<DockerSandboxHandle> {
   const codexAuthDir = params.codexAuthDir?.trim() || path.join(homedir(), ".codex");
+  const sandboxCommand = params.sandboxCommand?.trim() || "codex";
+  const useHostNetwork = shouldUseHostNetworkByDefault({
+    useHostNetwork: params.useHostNetwork,
+    proxyOverrides: params.proxyOverrides,
+  });
   const id = randomBytes(8).toString("hex");
   const containerName = `ai-programmer-sandbox-${id}`;
   const wrapperScriptPath = path.join(tmpdir(), `ai-programmer-wrapper-${id}.sh`);
   const configTomlPath = path.join(tmpdir(), `ai-programmer-config-${id}.toml`);
   const { envArgs, needsHostGateway } = buildDockerProxyEnvArgs(
     params.proxyOverrides,
-    params.useHostNetwork,
+    useHostNetwork,
   );
 
   const mountArgs: string[] = [
@@ -121,23 +206,32 @@ export async function startDockerSandbox(params: {
     "-v",
     `${params.workspaceDir}:${params.workspaceDir}`,
   ];
+  const mountedSources = new Set<string>([normalizeMountSource(params.workspaceDir)]);
 
-  // Mount only auth.json (RO) rather than the full codex dir.
-  // Mounting the full dir inherits the host config.toml which may contain fields
-  // that are invalid for the codex-acp version installed in the image (e.g.
-  // stream_idle_timeout_ms in [features] is parsed as boolean and causes a hard
-  // startup crash). The container's /root/.codex for session/state writes is
-  // ephemeral and that is fine for a one-shot sandbox invocation.
-  const codexAuthFile = path.join(codexAuthDir, "auth.json");
-  if (existsSync(codexAuthFile)) {
-    mountArgs.push("-v", `${codexAuthFile}:/root/.codex/auth.json:ro`);
+  // Mount the full Codex state directory so the sandbox sees the same auth +
+  // sqlite/session state as the host CLI. Mounting only auth.json proved
+  // insufficient for some backends, which then surfaced as "cannot connect to
+  // Codex backend" even though login looked present. We still overlay a
+  // generated config.toml below so container-specific transport tuning applies
+  // and incompatible host config fields do not leak into the image runtime.
+  if (existsSync(codexAuthDir)) {
+    mountArgs.push("-v", `${codexAuthDir}:/root/.codex`);
+    mountedSources.add(normalizeMountSource(codexAuthDir));
   }
 
   // Write a sandbox-specific config.toml with a generous stream idle timeout.
   // The host config.toml is intentionally NOT mounted to avoid inheriting invalid
-  // fields. stream_idle_timeout_ms prevents codex from dropping long-running
-  // streaming responses mid-generation (default is too short for complex tasks).
-  const configToml = `# sandbox config — generated by ai-programmer\nstream_idle_timeout_ms = 600000\n`;
+  // fields. stream_idle_timeout_ms is a per-provider field under [model_providers.<name>];
+  // "chatgpt" matches the built-in ChatGPT OAuth provider's internal name (verified via
+  // binary auth method IDs). stream_max_retries auto-retries on mid-stream disconnects.
+  const configToml = [
+    "# sandbox config — generated by ai-programmer",
+    "[model_providers.chatgpt]",
+    'name = "chatgpt"',
+    "stream_idle_timeout_ms = 600000",
+    "stream_max_retries = 5",
+    "",
+  ].join("\n");
   writeFileSync(configTomlPath, configToml, { mode: 0o600 });
   mountArgs.push("-v", `${configTomlPath}:/root/.codex/config.toml:ro`);
 
@@ -145,33 +239,49 @@ export async function startDockerSandbox(params: {
   for (const grant of params.fsGrants ?? []) {
     const p = grant.path.trim();
     if (!p) continue;
+    const normalized = normalizeMountSource(p);
+    if (mountedSources.has(normalized)) {
+      continue;
+    }
     const suffix = grant.access === "rw" ? "" : ":ro";
     mountArgs.push("-v", `${p}:${p}${suffix}`);
+    mountedSources.add(normalized);
   }
 
-  await execFileAsync(DOCKER_BIN, [
-    "run",
-    "--name",
-    containerName,
-    "--rm",
-    "-d",
-    // --network=host lets the container reach 127.0.0.1 directly (same as host),
-    // avoiding Docker bridge NAT which can drop long-lived proxy streams.
-    // Mutually exclusive with --add-host, so only one branch runs.
-    ...(params.useHostNetwork
-      ? ["--network", "host"]
-      : needsHostGateway
-        ? ["--add-host", "host.docker.internal:host-gateway"]
-        : []),
-    ...envArgs,
-    ...mountArgs,
-    params.image,
-    "tail",
-    "-f",
-    "/dev/null",
-  ]);
+  try {
+    await execFileAsync(DOCKER_BIN, [
+      "run",
+      "--name",
+      containerName,
+      "--rm",
+      "-d",
+      // --network=host lets the container reach 127.0.0.1 directly (same as host),
+      // avoiding Docker bridge NAT which can drop long-lived proxy streams.
+      // Mutually exclusive with --add-host, so only one branch runs.
+      ...(useHostNetwork
+        ? ["--network", "host"]
+        : needsHostGateway
+          ? ["--add-host", "host.docker.internal:host-gateway"]
+          : []),
+      ...envArgs,
+      ...mountArgs,
+      params.image,
+      "tail",
+      "-f",
+      "/dev/null",
+    ]);
+  } catch (err) {
+    throw new Error(`docker run failed: ${formatExecFileError(err)}`);
+  }
 
-  const script = `#!/bin/sh\nexec ${DOCKER_BIN} exec -i ${containerName} acpx "$@"\n`;
+  try {
+    await verifySandboxCommand(containerName, sandboxCommand);
+  } catch (err) {
+    await stopDockerSandbox({ containerName, wrapperScriptPath, configTomlPath }).catch(() => {});
+    throw err;
+  }
+
+  const script = `#!/bin/sh\nexec ${DOCKER_BIN} exec -i ${containerName} "${sandboxCommand}" "$@"\n`;
   try {
     writeFileSync(wrapperScriptPath, script, { mode: 0o700 });
   } catch (err) {

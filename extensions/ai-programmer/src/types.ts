@@ -8,6 +8,10 @@ export type CodingTaskResult = {
   testDetails?: string; // ≤200 chars
   errorDetails?: string; // ≤300 chars
   buildOutput?: string; // ≤200 chars
+  needsDeployment?: boolean;
+  deploymentScript?: string;
+  deploymentCommandId?: string;
+  deploymentSummary?: string;
   durationMs: number;
 };
 
@@ -32,6 +36,10 @@ export const CODING_TASK_RESULT_SCHEMA = {
     testDetails: { type: "string" },
     errorDetails: { type: "string" },
     buildOutput: { type: "string" },
+    needsDeployment: { type: "boolean" },
+    deploymentScript: { type: "string" },
+    deploymentCommandId: { type: "string" },
+    deploymentSummary: { type: "string" },
     durationMs: { type: "number" },
   },
   additionalProperties: false,

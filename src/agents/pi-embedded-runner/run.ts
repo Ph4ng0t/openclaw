@@ -57,6 +57,7 @@ import { resolveModel } from "./model.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
+import type { EmbeddedRunAttemptResult } from "./run/types.js";
 import {
   truncateOversizedToolResultsInSession,
   sessionLikelyHasOversizedToolResults,
@@ -123,12 +124,72 @@ const BASE_RUN_RETRY_ITERATIONS = 24;
 const RUN_RETRY_ITERATIONS_PER_PROFILE = 8;
 const MIN_RUN_RETRY_ITERATIONS = 32;
 const MAX_RUN_RETRY_ITERATIONS = 160;
+const TRANSIENT_TRANSPORT_RETRY_DELAYS_MS = [1_000, 2_500] as const;
 
 function resolveMaxRunRetryIterations(profileCandidateCount: number): number {
   const scaled =
     BASE_RUN_RETRY_ITERATIONS +
     Math.max(1, profileCandidateCount) * RUN_RETRY_ITERATIONS_PER_PROFILE;
   return Math.min(MAX_RUN_RETRY_ITERATIONS, Math.max(MIN_RUN_RETRY_ITERATIONS, scaled));
+}
+
+function attemptHasObservableProgress(attempt: EmbeddedRunAttemptResult): boolean {
+  return (
+    attempt.assistantTexts.some((text) => text.trim().length > 0) ||
+    attempt.toolMetas.length > 0 ||
+    Boolean(attempt.lastToolError) ||
+    attempt.didSendViaMessagingTool ||
+    attempt.messagingToolSentTexts.length > 0 ||
+    attempt.messagingToolSentMediaUrls.length > 0 ||
+    attempt.messagingToolSentTargets.length > 0 ||
+    (attempt.successfulCronAdds ?? 0) > 0 ||
+    Boolean(attempt.clientToolCall)
+  );
+}
+
+function resolveTransientTransportRetryDelayMs(params: {
+  failoverReason?: FailoverReason | null;
+  attempt: EmbeddedRunAttemptResult;
+  retryCount: number;
+  abortSignal?: AbortSignal;
+}): number | null {
+  if (params.abortSignal?.aborted) {
+    return null;
+  }
+  if (params.failoverReason !== "timeout") {
+    return null;
+  }
+  if (params.attempt.timedOutDuringCompaction) {
+    return null;
+  }
+  if (attemptHasObservableProgress(params.attempt)) {
+    return null;
+  }
+  return TRANSIENT_TRANSPORT_RETRY_DELAYS_MS[params.retryCount] ?? null;
+}
+
+async function waitForTransientTransportRetry(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (delayMs <= 0) {
+    return;
+  }
+  if (signal?.aborted) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    };
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
 }
 
 const hasUsageValues = (
@@ -655,6 +716,7 @@ export async function runEmbeddedPiAgent(
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
       let runLoopIterations = 0;
+      let transientTransportRetryCount = 0;
       const maybeMarkAuthProfileFailure = async (failure: {
         profileId?: string;
         reason?: Parameters<typeof markAuthProfileFailure>[0]["reason"] | null;
@@ -849,6 +911,7 @@ export async function runEmbeddedPiAgent(
               hadAttemptLevelCompaction &&
               overflowCompactionAttempts < MAX_OVERFLOW_COMPACTION_ATTEMPTS
             ) {
+              transientTransportRetryCount = 0;
               overflowCompactionAttempts++;
               log.warn(
                 `context overflow persisted after in-attempt compaction (attempt ${overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); retrying prompt without additional compaction for ${provider}/${modelId}`,
@@ -900,6 +963,7 @@ export async function runEmbeddedPiAgent(
                 maxAttempts: MAX_OVERFLOW_COMPACTION_ATTEMPTS,
               });
               if (compactResult.compacted) {
+                transientTransportRetryCount = 0;
                 autoCompactionCount += 1;
                 log.info(`auto-compaction succeeded for ${provider}/${modelId}; retrying prompt`);
                 continue;
@@ -940,6 +1004,7 @@ export async function runEmbeddedPiAgent(
                   sessionKey: params.sessionKey,
                 });
                 if (truncResult.truncated) {
+                  transientTransportRetryCount = 0;
                   log.info(
                     `[context-overflow-recovery] Truncated ${truncResult.truncatedCount} tool result(s); retrying prompt`,
                   );
@@ -995,6 +1060,22 @@ export async function runEmbeddedPiAgent(
 
           if (promptError && !aborted) {
             const errorText = describeUnknownError(promptError);
+            const promptFailoverReason = classifyFailoverReason(errorText);
+            const promptRetryDelayMs = resolveTransientTransportRetryDelayMs({
+              failoverReason: promptFailoverReason,
+              attempt,
+              retryCount: transientTransportRetryCount,
+              abortSignal: params.abortSignal,
+            });
+            if (promptRetryDelayMs !== null) {
+              transientTransportRetryCount += 1;
+              log.warn(
+                `transient transport failure during prompt for ${provider}/${modelId}; retrying same session in ${promptRetryDelayMs}ms (attempt ${transientTransportRetryCount}/${TRANSIENT_TRANSPORT_RETRY_DELAYS_MS.length})`,
+              );
+              await waitForTransientTransportRetry(promptRetryDelayMs, params.abortSignal);
+              continue;
+            }
+            transientTransportRetryCount = 0;
             if (await maybeRefreshCopilotForAuthError(errorText, copilotAuthRetry)) {
               authRetryPending = true;
               continue;
@@ -1050,7 +1131,6 @@ export async function runEmbeddedPiAgent(
                 },
               };
             }
-            const promptFailoverReason = classifyFailoverReason(errorText);
             await maybeMarkAuthProfileFailure({
               profileId: lastProfileId,
               reason: promptFailoverReason,
@@ -1067,6 +1147,7 @@ export async function runEmbeddedPiAgent(
               attempted: attemptedThinking,
             });
             if (fallbackThinking) {
+              transientTransportRetryCount = 0;
               log.warn(
                 `unsupported thinking level for ${provider}/${modelId}; retrying with ${fallbackThinking}`,
               );
@@ -1092,6 +1173,7 @@ export async function runEmbeddedPiAgent(
             attempted: attemptedThinking,
           });
           if (fallbackThinking && !aborted) {
+            transientTransportRetryCount = 0;
             log.warn(
               `unsupported thinking level for ${provider}/${modelId}; retrying with ${fallbackThinking}`,
             );
@@ -1140,6 +1222,23 @@ export async function runEmbeddedPiAgent(
           // but exclude post-prompt compaction timeouts (model succeeded; no profile issue).
           const shouldRotate =
             (!aborted && failoverFailure) || (timedOut && !timedOutDuringCompaction);
+
+          const assistantRetryDelayMs = resolveTransientTransportRetryDelayMs({
+            failoverReason:
+              timedOut && !timedOutDuringCompaction ? "timeout" : assistantFailoverReason,
+            attempt,
+            retryCount: transientTransportRetryCount,
+            abortSignal: params.abortSignal,
+          });
+          if (assistantRetryDelayMs !== null) {
+            transientTransportRetryCount += 1;
+            log.warn(
+              `transient transport failure after prompt for ${provider}/${modelId}; retrying same session in ${assistantRetryDelayMs}ms (attempt ${transientTransportRetryCount}/${TRANSIENT_TRANSPORT_RETRY_DELAYS_MS.length})`,
+            );
+            await waitForTransientTransportRetry(assistantRetryDelayMs, params.abortSignal);
+            continue;
+          }
+          transientTransportRetryCount = 0;
 
           if (shouldRotate) {
             if (lastProfileId) {

@@ -1,38 +1,47 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "../../../src/plugins/types.js";
-import {
-  startDockerSandbox,
-  stopDockerSandbox,
-  type DockerSandboxHandle,
-  type ProxyOverrides,
-} from "./docker-sandbox.js";
+import { startDockerSandbox, stopDockerSandbox, type FsGrant } from "./docker-sandbox.js";
 import { fallbackResult, summarizeCodingTask } from "./summarizer.js";
 import type { CodingTaskResult } from "./types.js";
 
-const DEFAULT_CODEX_AGENT = "codex";
+const DEFAULT_CODEX_COMMAND = "codex";
+const DEFAULT_SANDBOX_IMAGE = "ai-programmer-sandbox:latest";
 const DEFAULT_CODEX_TIMEOUT_MS = 300_000; // 5 minutes
 const DEFAULT_SUMMARIZER_TIMEOUT_MS = 60_000;
-const DEFAULT_WORKSPACE_DIR = "/home/lawliet/projects/AutoCompany/AI-Programmer";
+const DEFAULT_AI_PROGRAMMER_WORKSPACE = path.join(
+  os.homedir(),
+  ".openclaw",
+  "workspace",
+  "ai-programmer",
+);
+const MAX_PROJECT_NAME_LENGTH = 48;
 
 type SandboxCfg = {
   enabled?: boolean;
-  image?: string; // Default: "ai-programmer-sandbox:latest"
-  codexAuthDir?: string; // Default: ~/.codex
-  // Explicit proxy settings forwarded into the sandbox container.
-  // If omitted, host HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY env vars are used automatically.
+  // Retained for backward-compatible config parsing. The tool now runs the host
+  // Codex CLI directly because codex-acp's OAuth streaming path is unstable in
+  // this environment.
+  image?: string;
+  codexAuthDir?: string;
+  command?: string;
   proxy?: {
     httpProxy?: string;
     httpsProxy?: string;
     allProxy?: string;
     noProxy?: string;
   };
-  // Use host network namespace so 127.0.0.1 proxy is reachable directly (Linux only).
   useHostNetwork?: boolean;
 };
 
 type PluginCfg = {
-  codexAgent?: string;
+  codexCommand?: string;
+  workspaceDir?: string;
+  allowTaskWorkspaceOverride?: boolean;
   summarizerProvider?: string;
   summarizerModel?: string;
   codexTimeoutMs?: number;
@@ -41,61 +50,14 @@ type PluginCfg = {
   sandbox?: SandboxCfg;
 };
 
-// Minimal interface for the AcpxRuntime we need (avoids importing the full type)
-type MinimalAcpEvent = {
-  type: string;
-  text?: string;
-  stream?: string;
-  message?: string;
+type CodexLaunchTarget = {
+  command: string;
+  bypassInnerSandbox?: boolean;
+  cleanup?: () => Promise<void>;
 };
 
-type MinimalAcpHandle = Record<string, unknown>;
-
-type MinimalAcpRuntime = {
-  ensureSession(input: {
-    sessionKey: string;
-    agent: string;
-    cwd: string;
-    mode: "oneshot" | "persistent";
-  }): Promise<MinimalAcpHandle>;
-  runTurn(input: {
-    handle: MinimalAcpHandle;
-    text: string;
-    signal?: AbortSignal;
-  }): AsyncIterable<MinimalAcpEvent>;
-  close(input: { handle: MinimalAcpHandle; reason: string }): Promise<void>;
-};
-
-type AcpxRuntimeConstructor = new (
-  config: Record<string, unknown>,
-  opts?: { logger?: unknown },
-) => MinimalAcpRuntime;
-
-type ResolveAcpxPluginConfigFn = (params: {
-  rawConfig: unknown;
-  workspaceDir?: string;
-}) => Record<string, unknown>;
-
-async function loadAcpxRuntime(): Promise<{
-  AcpxRuntime: AcpxRuntimeConstructor;
-  resolveAcpxPluginConfig: ResolveAcpxPluginConfigFn;
-}> {
-  // Dynamic import — resolves from source checkout or built install
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const runtimeMod = (await import("../../acpx/src/runtime.js")) as any;
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const configMod = (await import("../../acpx/src/config.js")) as any;
-  if (typeof runtimeMod.AcpxRuntime !== "function") {
-    throw new Error("AcpxRuntime not available — ensure the acpx plugin is installed");
-  }
-  if (typeof configMod.resolveAcpxPluginConfig !== "function") {
-    throw new Error("resolveAcpxPluginConfig not available");
-  }
-  return {
-    AcpxRuntime: runtimeMod.AcpxRuntime as AcpxRuntimeConstructor,
-    resolveAcpxPluginConfig: configMod.resolveAcpxPluginConfig as ResolveAcpxPluginConfigFn,
-  };
-}
+const AI_PROGRAMMER_DEPLOY_SCRIPT = "scripts/deploy-ai-programmer.sh";
+const AI_PROGRAMMER_DEPLOY_COMMAND_ID = "openclaw.deploy.ai-programmer";
 
 function randomHex(bytes: number): string {
   return randomBytes(bytes).toString("hex");
@@ -147,6 +109,309 @@ function buildErrorResult(err: unknown, durationMs: number): CodingTaskResult {
   return fallbackResult(durationMs, msg.slice(0, 300));
 }
 
+function createTempFile(prefix: string, suffix: string): string {
+  return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${randomHex(6)}${suffix}`);
+}
+
+function resolveWorkspaceRoot(
+  paramsWorkspaceDir: unknown,
+  pluginWorkspaceDir: unknown,
+  allowTaskWorkspaceOverride?: boolean,
+): string {
+  if (
+    allowTaskWorkspaceOverride &&
+    typeof paramsWorkspaceDir === "string" &&
+    paramsWorkspaceDir.trim()
+  ) {
+    return paramsWorkspaceDir.trim();
+  }
+  if (typeof pluginWorkspaceDir === "string" && pluginWorkspaceDir.trim()) {
+    return pluginWorkspaceDir.trim();
+  }
+  return DEFAULT_AI_PROGRAMMER_WORKSPACE;
+}
+
+function slugifyProjectName(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_PROJECT_NAME_LENGTH);
+  return slug || "project";
+}
+
+function inferProjectNameFromTask(task: string): string {
+  return slugifyProjectName(task.replace(/\s+/g, " ").trim().slice(0, 80));
+}
+
+function buildGeneratedProjectName(task: string): string {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, "")
+    .slice(0, 14);
+  return `${stamp}-${inferProjectNameFromTask(task)}`;
+}
+
+function resolveProjectDir(params: {
+  workspaceRoot: string;
+  task: string;
+  projectName?: unknown;
+}): { projectDir: string; projectName: string } {
+  const explicitProjectName =
+    typeof params.projectName === "string" && params.projectName.trim()
+      ? slugifyProjectName(params.projectName.trim())
+      : "";
+  const projectName = explicitProjectName || buildGeneratedProjectName(params.task);
+  return {
+    projectDir: path.join(params.workspaceRoot, projectName),
+    projectName,
+  };
+}
+
+async function ensureProjectTemplate(projectDir: string, projectName: string): Promise<void> {
+  const memoryDir = path.join(projectDir, "memory");
+  await fs.mkdir(memoryDir, { recursive: true });
+
+  const templateFiles = [
+    {
+      path: path.join(projectDir, "AGENTS.md"),
+      content: `# ${projectName}
+
+Project rules:
+- Read \`memory/current.md\` before making changes.
+- Record durable technical decisions in \`memory/decisions.md\`.
+- Record pending follow-up work in \`memory/todo.md\`.
+- Keep \`memory/current.md\` focused on the latest project state.
+`,
+    },
+    {
+      path: path.join(memoryDir, "current.md"),
+      content: `# Current State
+
+- Project initialized.
+- Update this file with the latest architecture, active goals, and important constraints.
+`,
+    },
+    {
+      path: path.join(memoryDir, "decisions.md"),
+      content: `# Decisions
+
+- Record durable technical decisions here with brief rationale.
+`,
+    },
+    {
+      path: path.join(memoryDir, "todo.md"),
+      content: `# Todo
+
+- Record pending tasks, follow-ups, and verification gaps here.
+`,
+    },
+  ];
+
+  for (const file of templateFiles) {
+    const exists = await fs
+      .access(file.path)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      await fs.writeFile(file.path, file.content, "utf8");
+    }
+  }
+}
+
+type CodexRunRecord = {
+  executor: "codex-cli";
+  codexCommand: string;
+  workspaceDir: string;
+  status: "invoked" | "started" | "completed" | "failed" | "timed_out";
+  startedAt: string;
+  finishedAt?: string;
+  rawOutputBytes?: number;
+  errorMessage?: string;
+};
+
+async function writeRunRecord(workspaceDir: string, record: CodexRunRecord): Promise<void> {
+  const runStateDir = path.join(workspaceDir, ".openclaw", "ai-programmer");
+  const runStatePath = path.join(runStateDir, "last-run.json");
+  await fs.mkdir(runStateDir, { recursive: true });
+  await fs.writeFile(runStatePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+}
+
+async function writeRunRawOutput(workspaceDir: string, rawOutput: string): Promise<void> {
+  const runStateDir = path.join(workspaceDir, ".openclaw", "ai-programmer");
+  const runOutputPath = path.join(runStateDir, "last-run-output.txt");
+  await fs.mkdir(runStateDir, { recursive: true });
+  await fs.writeFile(runOutputPath, rawOutput, "utf8");
+}
+
+async function writeRunError(workspaceDir: string, errorText: string): Promise<void> {
+  const runStateDir = path.join(workspaceDir, ".openclaw", "ai-programmer");
+  const runErrorPath = path.join(runStateDir, "last-run-error.txt");
+  await fs.mkdir(runStateDir, { recursive: true });
+  await fs.writeFile(runErrorPath, errorText, "utf8");
+}
+
+function annotateDeployment(summary: CodingTaskResult): CodingTaskResult {
+  const touched = new Set([
+    ...summary.filesChanged,
+    ...summary.filesCreated,
+    ...summary.filesDeleted,
+  ]);
+  const touchesAiProgrammer =
+    Array.from(touched).some((file) => file.startsWith("extensions/ai-programmer/")) ||
+    touched.has(AI_PROGRAMMER_DEPLOY_SCRIPT);
+  if (!touchesAiProgrammer) {
+    return summary;
+  }
+
+  const needsImageRebuild = Array.from(touched).some(
+    (file) => file === "extensions/ai-programmer/Dockerfile.sandbox",
+  );
+  const deploymentSummary = needsImageRebuild
+    ? "ai-programmer changed extension code and sandbox image inputs; request owner approval through the OpenClaw privileged gate to run the ai-programmer deploy command (rebuild image + restart gateway)."
+    : "ai-programmer changed extension code; request owner approval through the OpenClaw privileged gate to run the ai-programmer deploy command (restart gateway, image rebuild optional).";
+
+  return {
+    ...summary,
+    needsDeployment: true,
+    deploymentScript: AI_PROGRAMMER_DEPLOY_SCRIPT,
+    deploymentCommandId: AI_PROGRAMMER_DEPLOY_COMMAND_ID,
+    deploymentSummary,
+  };
+}
+
+async function runCodexTask(params: {
+  prompt: string;
+  workspaceDir: string;
+  timeoutMs: number;
+  launchCommand: string;
+  bypassInnerSandbox?: boolean;
+}): Promise<{
+  timedOut: boolean;
+  rawOutput: string;
+  errorMessage: string;
+}> {
+  const startedAt = new Date().toISOString();
+  const lastMessagePath = createTempFile("ai-programmer-codex-last", ".txt");
+  const args = params.bypassInnerSandbox
+    ? [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "exec",
+        "--json",
+        "-C",
+        params.workspaceDir,
+        "--skip-git-repo-check",
+        "-o",
+        lastMessagePath,
+        "-",
+      ]
+    : [
+        "-a",
+        "never",
+        "exec",
+        "-s",
+        "workspace-write",
+        "--json",
+        "-C",
+        params.workspaceDir,
+        "--skip-git-repo-check",
+        "-o",
+        lastMessagePath,
+        "-",
+      ];
+
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+
+  try {
+    await writeRunRecord(params.workspaceDir, {
+      executor: "codex-cli",
+      codexCommand: params.launchCommand,
+      workspaceDir: params.workspaceDir,
+      status: "started",
+      startedAt,
+    }).catch(() => {});
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(params.launchCommand, args, {
+        cwd: params.workspaceDir,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      }, params.timeoutMs);
+
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        if (timedOut) {
+          resolve();
+          return;
+        }
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const suffix = signal ? ` (signal ${signal})` : code != null ? ` (exit ${code})` : "";
+        reject(
+          new Error(`codex exec failed${suffix}: ${(stderr || stdout).trim() || "no output"}`),
+        );
+      });
+
+      child.stdin.end(params.prompt);
+    });
+
+    const lastMessage = await fs.readFile(lastMessagePath, "utf8").catch(() => "");
+    const rawOutput = [stdout.trim(), stderr.trim(), lastMessage.trim()]
+      .filter(Boolean)
+      .join("\n\n");
+    await writeRunRawOutput(params.workspaceDir, rawOutput).catch(() => {});
+    await writeRunRecord(params.workspaceDir, {
+      executor: "codex-cli",
+      codexCommand: params.launchCommand,
+      workspaceDir: params.workspaceDir,
+      status: timedOut ? "timed_out" : "completed",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      rawOutputBytes: Buffer.byteLength(rawOutput, "utf8"),
+      ...(stderr.trim() ? { errorMessage: stderr.trim().slice(0, 500) } : {}),
+    }).catch(() => {});
+    return {
+      timedOut,
+      rawOutput,
+      errorMessage: stderr.trim(),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err ?? "unknown error");
+    await writeRunRecord(params.workspaceDir, {
+      executor: "codex-cli",
+      codexCommand: params.launchCommand,
+      workspaceDir: params.workspaceDir,
+      status: "failed",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errorMessage: message.slice(0, 500),
+    }).catch(() => {});
+    throw err;
+  } finally {
+    await fs.rm(lastMessagePath, { force: true }).catch(() => {});
+  }
+}
+
 export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPluginToolContext) {
   const agentDir = ctx?.agentDir;
   return {
@@ -157,8 +422,17 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
     parameters: Type.Object(
       {
         task: Type.String({ description: "Coding task description for codex." }),
+        projectName: Type.Optional(
+          Type.String({
+            description:
+              "Optional project name under the ai-programmer workspace root. When omitted, ai-programmer creates a new project directory and seeds it with AGENTS.md and memory templates.",
+          }),
+        ),
         workspaceDir: Type.Optional(
-          Type.String({ description: "Workspace directory for codex to operate in." }),
+          Type.String({
+            description:
+              "Optional workspace root override for ai-programmer projects. When enabled in plugin config, ai-programmer creates or reuses a project directory inside this root.",
+          }),
         ),
         timeoutMs: Type.Optional(
           Type.Integer({ description: "Codex timeout in milliseconds (default: 300000)." }),
@@ -178,9 +452,19 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
 
       const pluginCfg = (api.pluginConfig ?? {}) as PluginCfg;
 
-      const workspaceDir =
-        (typeof params.workspaceDir === "string" && params.workspaceDir.trim()) ||
-        DEFAULT_WORKSPACE_DIR;
+      const workspaceRoot = resolveWorkspaceRoot(
+        params.workspaceDir,
+        pluginCfg.workspaceDir,
+        pluginCfg.allowTaskWorkspaceOverride === true,
+      );
+      await fs.mkdir(workspaceRoot, { recursive: true });
+      const { projectDir: workspaceDir, projectName } = resolveProjectDir({
+        workspaceRoot,
+        task,
+        projectName: params.projectName,
+      });
+      await fs.mkdir(workspaceDir, { recursive: true });
+      await ensureProjectTemplate(workspaceDir, projectName);
 
       const codexTimeoutMs =
         (typeof params.timeoutMs === "number" && params.timeoutMs > 0 ? params.timeoutMs : null) ??
@@ -194,7 +478,17 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
           ? pluginCfg.summarizerTimeoutMs
           : null) ?? DEFAULT_SUMMARIZER_TIMEOUT_MS;
 
-      const agentName = pluginCfg.codexAgent?.trim() || DEFAULT_CODEX_AGENT;
+      const sandboxCfg = pluginCfg.sandbox;
+      const sandboxEnabled = sandboxCfg?.enabled !== false;
+      const codexCommand = pluginCfg.codexCommand?.trim() || DEFAULT_CODEX_COMMAND;
+      const startedAt = new Date().toISOString();
+      await writeRunRecord(workspaceDir, {
+        executor: "codex-cli",
+        codexCommand,
+        workspaceDir,
+        status: "invoked",
+        startedAt,
+      }).catch(() => {});
 
       // Resolve summarizer provider/model from plugin config or global defaults
       const summarizerModel =
@@ -210,142 +504,71 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
       const fullTask = context ? `${task}\n\nAdditional context:\n${context}` : task;
 
       const startTime = Date.now();
-
-      const sandboxCfg = pluginCfg.sandbox;
-      let sandboxHandle: DockerSandboxHandle | null = null;
-      let acpxCommand: string | undefined;
-
-      if (sandboxCfg?.enabled === true) {
-        const image = sandboxCfg.image?.trim() || "ai-programmer-sandbox:latest";
-        // Read fsGrants from config — same grants that authorize the Feishu sandbox container's mounts
-        // oxlint-disable-next-line typescript/no-explicit-any
-        const rawGrants = (api.config as any)?.tools?.fs?.grants;
-        const fsGrants: Array<{ path: string; access: "ro" | "rw" }> = Array.isArray(rawGrants)
-          ? rawGrants.filter(
-              (g: unknown) => typeof (g as Record<string, unknown>)?.path === "string",
-            )
-          : [];
-        try {
-          const proxyOverrides: ProxyOverrides | undefined = sandboxCfg.proxy
-            ? {
-                httpProxy: sandboxCfg.proxy.httpProxy,
-                httpsProxy: sandboxCfg.proxy.httpsProxy,
-                allProxy: sandboxCfg.proxy.allProxy,
-                noProxy: sandboxCfg.proxy.noProxy,
-              }
-            : undefined;
-          sandboxHandle = await startDockerSandbox({
-            image,
+      let timedOut = false;
+      let rawOutput = "";
+      let errorMessage = "";
+      let launchTarget: CodexLaunchTarget | null = null;
+      try {
+        if (sandboxEnabled) {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          const fsGrants = ((api.config as any)?.tools?.fs?.grants ?? []) as FsGrant[];
+          const sandboxHandle = await startDockerSandbox({
+            image: sandboxCfg?.image?.trim() || DEFAULT_SANDBOX_IMAGE,
             workspaceDir,
             fsGrants,
-            codexAuthDir: sandboxCfg.codexAuthDir,
-            proxyOverrides,
-            useHostNetwork: sandboxCfg.useHostNetwork,
+            codexAuthDir: sandboxCfg?.codexAuthDir,
+            sandboxCommand: sandboxCfg?.command?.trim() || "codex",
+            proxyOverrides: sandboxCfg?.proxy,
+            useHostNetwork: sandboxCfg?.useHostNetwork,
           });
-          acpxCommand = sandboxHandle.wrapperScriptPath;
-        } catch (err) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(buildErrorResult(err, Date.now() - startTime), null, 2),
-              },
-            ],
+          launchTarget = {
+            command: sandboxHandle.wrapperScriptPath,
+            bypassInnerSandbox: true,
+            cleanup: async () => stopDockerSandbox(sandboxHandle),
           };
+        } else {
+          launchTarget = { command: codexCommand, bypassInnerSandbox: false };
         }
-      }
-
-      let acpxRuntime: MinimalAcpRuntime;
-      try {
-        const { AcpxRuntime, resolveAcpxPluginConfig } = await loadAcpxRuntime();
-        const resolvedConfig = resolveAcpxPluginConfig({
-          rawConfig: {
-            permissionMode: "approve-all",
-            nonInteractivePermissions: "deny",
-            // Pass timeout to acpx as a belt-and-suspenders guard alongside AbortController
-            timeoutSeconds: Math.ceil(codexTimeoutMs / 1000) + 10,
-            ...(acpxCommand ? { command: acpxCommand } : {}),
-          },
+        const result = await runCodexTask({
+          prompt: fullTask,
           workspaceDir,
+          timeoutMs: codexTimeoutMs,
+          launchCommand: launchTarget.command,
+          bypassInnerSandbox: launchTarget.bypassInnerSandbox,
         });
-        acpxRuntime = new AcpxRuntime(resolvedConfig);
+        timedOut = result.timedOut;
+        rawOutput = result.rawOutput;
+        errorMessage = result.errorMessage;
       } catch (err) {
-        if (sandboxHandle) {
-          await stopDockerSandbox(sandboxHandle).catch(() => {});
-        }
+        const errorText = err instanceof Error ? err.message : String(err ?? "unknown error");
+        await writeRunError(workspaceDir, errorText).catch(() => {});
+        await writeRunRecord(workspaceDir, {
+          executor: "codex-cli",
+          codexCommand,
+          workspaceDir,
+          status: "failed",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          errorMessage: errorText.slice(0, 500),
+        }).catch(() => {});
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(buildErrorResult(err, Date.now() - startTime), null, 2),
+              text: JSON.stringify(
+                {
+                  ...buildErrorResult(err, Date.now() - startTime),
+                  errorDetails: errorText,
+                },
+                null,
+                2,
+              ),
             },
           ],
+          details: { executor: "codex-cli", codexCommand, workspaceDir },
         };
-      }
-
-      // Unique session name per invocation for isolation
-      const sessionKey = `ai-programmer-${Date.now()}-${randomHex(6)}`;
-      let handle: MinimalAcpHandle | null = null;
-
-      try {
-        handle = await acpxRuntime.ensureSession({
-          sessionKey,
-          agent: agentName,
-          cwd: workspaceDir,
-          mode: "oneshot",
-        });
-      } catch (err) {
-        if (sandboxHandle) {
-          await stopDockerSandbox(sandboxHandle).catch(() => {});
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(buildErrorResult(err, Date.now() - startTime), null, 2),
-            },
-          ],
-        };
-      }
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, codexTimeoutMs);
-
-      const textParts: string[] = [];
-      let errorMessage = "";
-
-      try {
-        for await (const event of acpxRuntime.runTurn({
-          handle,
-          text: fullTask,
-          signal: controller.signal,
-        })) {
-          if (event.type === "text_delta" && event.stream === "output") {
-            textParts.push(typeof event.text === "string" ? event.text : "");
-          } else if (event.type === "error" && typeof event.message === "string") {
-            // Capture error message but continue collecting any remaining output
-            errorMessage = event.message;
-          }
-        }
-      } catch (err) {
-        if (!timedOut) {
-          errorMessage = err instanceof Error ? err.message : String(err ?? "");
-        }
       } finally {
-        clearTimeout(timer);
-        // Always close the session to release resources
-        try {
-          await acpxRuntime.close({ handle, reason: "task-complete" });
-        } catch {
-          // Ignore close errors
-        }
-        if (sandboxHandle) {
-          await stopDockerSandbox(sandboxHandle).catch(() => {});
-        }
+        await launchTarget?.cleanup?.().catch(() => {});
       }
 
       const durationMs = Date.now() - startTime;
@@ -358,16 +581,16 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
               text: JSON.stringify(buildTimeoutResult(durationMs), null, 2),
             },
           ],
+          details: { executor: "codex-cli", codexCommand, workspaceDir },
         };
       }
-
-      const rawOutput = textParts.join("");
 
       // If codex produced no output and reported an error, return structured failure
       if (!rawOutput && errorMessage) {
         const result = fallbackResult(durationMs, errorMessage.slice(0, 300));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: { executor: "codex-cli", codexCommand, workspaceDir },
         };
       }
 
@@ -383,10 +606,16 @@ export function createCodingTaskTool(api: OpenClawPluginApi, ctx?: OpenClawPlugi
 
       // Fill in actual duration (summarizer sets durationMs=0 per schema contract)
       summary.durationMs = durationMs;
+      const annotatedSummary = annotateDeployment(summary);
 
       return {
-        content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
-        details: { result: summary },
+        content: [{ type: "text", text: JSON.stringify(annotatedSummary, null, 2) }],
+        details: {
+          result: annotatedSummary,
+          executor: "codex-cli",
+          codexCommand,
+          workspaceDir,
+        },
       };
     },
   };

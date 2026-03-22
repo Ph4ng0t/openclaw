@@ -187,4 +187,34 @@ describe("applyPrivilegedRequest", () => {
       }),
     ).resolves.toBe("M src/file.ts");
   });
+
+  it("executes the ai-programmer deploy script through a registered command id", async () => {
+    execFileMock.mockImplementation(
+      (
+        file: string,
+        args: string[],
+        _options: Record<string, unknown>,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        expect(file).toBe("bash");
+        expect(args.at(0)).toMatch(/scripts\/deploy-ai-programmer\.sh$/);
+        callback(null, "ai-programmer deploy complete\n", "");
+      },
+    );
+
+    await expect(
+      applyPrivilegedRequest({
+        id: "req-ai-programmer-deploy",
+        kind: "host_exec",
+        status: "approved",
+        justification: "Deploy ai-programmer after approved code changes",
+        createdAtMs: 1,
+        expiresAtMs: 2,
+        payload: {
+          commandId: "openclaw.deploy.ai-programmer",
+        },
+        singleUse: true,
+      }),
+    ).resolves.toBe("ai-programmer deploy complete");
+  });
 });

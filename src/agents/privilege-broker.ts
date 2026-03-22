@@ -26,6 +26,11 @@ type HostExecRequest = {
   nodeId?: string;
 };
 
+type RegisteredHostExecRequest = {
+  commandId: string;
+  cwd?: string;
+};
+
 type PrivilegedListResponse = {
   requests?: Array<{
     id?: string;
@@ -44,6 +49,12 @@ type PrivilegedListResponse = {
 
 function sameString(a: unknown, b: unknown): boolean {
   return typeof a === "string" && typeof b === "string" && a.trim() === b.trim();
+}
+
+function sameOptionalString(a: unknown, b: unknown): boolean {
+  const left = typeof a === "string" ? a.trim() : "";
+  const right = typeof b === "string" ? b.trim() : "";
+  return left === right;
 }
 
 function normalizeHostExecCommand(command: string): string {
@@ -141,9 +152,44 @@ function findExistingHostExecRequest(params: {
     const requestedBy = request.requestedBy;
     if (
       !sameString(payloadCommand, normalizedCommand) ||
-      !sameString(payload.cwd, params.request.cwd) ||
-      !sameString(payload.host, params.request.host) ||
-      !sameString(payload.nodeId, params.request.nodeId)
+      !sameOptionalString(payload.cwd, params.request.cwd) ||
+      !sameOptionalString(payload.host, params.request.host) ||
+      !sameOptionalString(payload.nodeId, params.request.nodeId)
+    ) {
+      continue;
+    }
+    if (
+      (params.sessionKey && !sameString(requestedBy?.sessionKey, params.sessionKey)) ||
+      (params.agentId && !sameString(requestedBy?.agentId, params.agentId))
+    ) {
+      continue;
+    }
+    return typeof request.id === "string" ? request.id : undefined;
+  }
+  return undefined;
+}
+
+function findExistingRegisteredHostExecRequest(params: {
+  requests: NonNullable<PrivilegedListResponse["requests"]>;
+  sessionKey?: string;
+  agentId?: string;
+  request: RegisteredHostExecRequest;
+}): string | undefined {
+  const commandId =
+    typeof params.request.commandId === "string" ? params.request.commandId.trim() : "";
+  if (!commandId) {
+    return undefined;
+  }
+  for (const request of params.requests) {
+    if (request.kind !== "host_exec" || request.status !== "pending") {
+      continue;
+    }
+    const payload = request.payload ?? {};
+    const payloadCommandId = typeof payload.commandId === "string" ? payload.commandId.trim() : "";
+    const requestedBy = request.requestedBy;
+    if (
+      !sameString(payloadCommandId, commandId) ||
+      !sameOptionalString(payload.cwd, params.request.cwd)
     ) {
       continue;
     }
@@ -300,6 +346,80 @@ export async function requestHostExecPrivilege(params: {
         cwd: params.request.cwd,
         host,
         nodeId: params.request.nodeId,
+        expiresAt,
+      },
+      requestedBy: {
+        channel: params.channel,
+        accountId: params.accountId,
+        senderId: params.senderId ?? undefined,
+        sessionKey: params.sessionKey,
+        agentId: params.agentId,
+      },
+    },
+    clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+    clientDisplayName: "Agent privilege broker",
+    mode: GATEWAY_CLIENT_MODES.BACKEND,
+  });
+
+  return {
+    status: "requested",
+    requestId: typeof response?.id === "string" ? response.id : "<unknown>",
+    expiresAtMs:
+      typeof response?.expiresAtMs === "number" && Number.isFinite(response.expiresAtMs)
+        ? response.expiresAtMs
+        : expiresAt,
+  };
+}
+
+export async function requestRegisteredHostExecPrivilege(params: {
+  cfg?: OpenClawConfig;
+  sessionKey?: string;
+  agentId?: string;
+  channel?: GatewayMessageChannel;
+  accountId?: string;
+  senderId?: string | null;
+  request: RegisteredHostExecRequest;
+}): Promise<
+  | { status: "requested"; requestId: string; expiresAtMs?: number }
+  | { status: "duplicate"; requestId: string }
+  | { status: "not-requested"; reason: string }
+> {
+  const commandId =
+    typeof params.request.commandId === "string" ? params.request.commandId.trim() : "";
+  if (!commandId) {
+    return { status: "not-requested", reason: "commandId is empty." };
+  }
+  const listed = await callGateway({
+    method: "privileged.list",
+    config: params.cfg,
+    clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+    clientDisplayName: "Agent privilege broker",
+    mode: GATEWAY_CLIENT_MODES.BACKEND,
+  });
+  const requests = Array.isArray(listed?.requests) ? listed.requests : [];
+  const duplicateId = findExistingRegisteredHostExecRequest({
+    requests,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    request: {
+      commandId,
+      cwd: params.request.cwd,
+    },
+  });
+  if (duplicateId) {
+    return { status: "duplicate", requestId: duplicateId };
+  }
+
+  const expiresAt = Date.now() + 30 * 60 * 1000;
+  const response = await callGateway({
+    method: "privileged.request",
+    config: params.cfg,
+    params: {
+      kind: "host_exec",
+      justification: `Allow registered host exec command: ${commandId}`,
+      payload: {
+        commandId,
+        cwd: params.request.cwd,
         expiresAt,
       },
       requestedBy: {
